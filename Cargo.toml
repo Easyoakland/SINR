@@ -1,0 +1,14 @@
+[package]
+name = "sinr"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["trace"]
+trace = []
+unsafe = []
+prealloc = []
+
+[dependencies]
+bilge = "0.2.0"
+petgraph = "0.7.1"
