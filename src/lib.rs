@@ -262,6 +262,9 @@ impl Net {
     pub fn root(&self) -> Ptr {
         self.nodes[0].left
     }
+    pub fn set_root(&mut self, root: Ptr) {
+        self.nodes[0].left = root
+    }
     /// Read the target of this pointer.
     pub fn read(&self, ptr: Ptr) -> Either<Node, Ptr> {
         match ptr.tag() {
@@ -271,9 +274,6 @@ impl Net {
             PtrTag::_Unused => uunreachable!(),
         }
     }
-    pub fn set_root(&mut self, root: Ptr) {
-        self.nodes[0].left = root
-    }
     // The other aux of a `Node`
     pub fn other_aux(&self, ptr: Ptr) -> Ptr {
         let node = self.nodes[ptr.slot_usize()];
@@ -281,6 +281,7 @@ impl Net {
             ptr.tag(),
             PtrTag::RightAux0 | PtrTag::RightAux1 | PtrTag::LeftAux0 | PtrTag::LeftAux1
         ));
+        // TODO xor instead of branch.
         if matches!(ptr.tag(), PtrTag::RightAux0 | PtrTag::RightAux1) {
             node.left
         } else {
@@ -288,6 +289,7 @@ impl Net {
         }
     }
     pub fn free_node(&mut self, idx: Ptr) {
+        // TODO add to a stack of free slot addresses.
         self.nodes[idx.slot_usize()] = Node::EMP();
     }
     #[inline]
@@ -307,7 +309,7 @@ impl Net {
     }
     #[inline]
     pub fn add_active_pair(redexes: &mut Redexes, left: Ptr, right: Ptr) {
-        // TODO: find a non-branching algorithm for this.
+        // TODO: find a non-branching algorithm for this. Probably going to be a LUT.
         uassert!(left.tag() != PtrTag::_Unused);
         uassert!(right.tag() != PtrTag::_Unused);
         uassert!(left != Ptr::EMP());
@@ -328,13 +330,14 @@ impl Net {
         };
         redexes[redex_ty as usize].push(redex);
     }
-    /// `ptr_to_fst` should have point to `fst` with stage 1.
+    /// `ptr_to_fst` should point to `fst` with stage 1.
     #[inline]
     pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
         uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
         // All cases either swap (heterogenous cases) or or don't care that they swap (homogenous cases).
         // TODO perf: see if this is an anti-optimization and it is better to check the below and dispatch with 3 masks.
         core::mem::swap(fst, snd);
+        // TODO how to remove this branching? Is it worthwhile to do all of them masked?
         match (*fst == Ptr::IN(), *snd == Ptr::IN()) {
             (true, true) => {
                 // This is the only reason there needs to be two stages for left and right instead of only 1 per left and right.
@@ -390,6 +393,7 @@ impl Net {
             (rl, Ptr::new(lt, rl2)),
             (rr, Ptr::new(lt, rr2)),
         ] {
+            // TODO remove branch or use a mask. Running `*a=b` masked should be very low-cost.
             if *a == Ptr::IN() {
                 *a = b // redirect to the new principal port
             } else {
@@ -400,6 +404,7 @@ impl Net {
 
         // Make new nodes and link their aux together so each has 1 out and 1 in.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
+        // TODO does this prevent SIMD? What if uassert all the indices are non-equal?
         self.nodes[ll2.value() as usize] = Node {
             left: Ptr::new(PtrTag::LeftAux0, rl2),
             right: Ptr::IN(),
@@ -430,6 +435,7 @@ impl Net {
             LeftRight::Right => &mut self.nodes[right.slot_usize()].right,
         };
         if *target == Ptr::IN() {
+            // TODO this is the same code as in `interact_comm`
             // if target isn't a redirect
             *target = left;
         } else {
