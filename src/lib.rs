@@ -464,6 +464,17 @@ static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
     core::hint::black_box(n);
 };
 
+#[used]
+static ADD_ACTIVE_PAIR: fn(&mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = {
+    fn add_active_pair_batch(n: &mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) {
+        for (l, r) in core::iter::zip(left_ptr, right_ptr) {
+            Net::add_active_pair(n, l, r);
+        }
+        core::hint::black_box(n);
+    }
+    add_active_pair_batch
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
