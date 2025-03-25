@@ -295,8 +295,10 @@ impl Net {
     #[inline]
     pub fn alloc_node(&mut self) -> u29 {
         let res = self.nodes.len();
-        self.nodes.0.push(Node::default());
-        u29::new(res.try_into().unwrap()) // TODO perf: bound check
+        self.nodes.push(Node::default());
+        uassert!(res <= u32::MAX as usize); // prevent check on feature=unsafe
+        uassert!(res <= <u29 as Bitsized>::MAX.value() as usize);
+        u29::new(res.try_into().unwrap())
     }
     #[inline]
     pub fn alloc_node2(&mut self) -> (u29, u29) {
@@ -446,13 +448,21 @@ impl Net {
     }
 }
 
-/* #[used]
-static f_interact_ann: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
+// Make asm generate for the function.
+#[used]
+static INTERACT_ANN: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
     for (l, r) in core::iter::zip(l, r) {
         Net::interact_ann(n, l, r);
     }
     core::hint::black_box(n);
-}; */
+};
+#[used]
+static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
+    for (l, r) in core::iter::zip(l, r) {
+        Net::interact_com(n, l, r);
+    }
+    core::hint::black_box(n);
+};
 
 #[cfg(test)]
 mod tests {
