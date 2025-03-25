@@ -53,7 +53,7 @@ impl<T> UnsafeVec<T> {
         //     unsafe { core::hint::unreachable_unchecked() }
         // }
         #[cfg(feature = "prealloc")]
-        uassert!(self.0.len() < self.0.capacity());
+        crate::macros::uassert!(self.0.len() < self.0.capacity());
         self.0.push(value);
     }
     #[inline]
