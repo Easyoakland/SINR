@@ -250,12 +250,21 @@ struct Net {
 }
 impl Default for Net {
     fn default() -> Self {
-        Self {
+        #[allow(unused_mut)]
+        let mut net = Self {
             // The first slot can't be pointed towards since slot 0 is an invalid slot id.
             // Can, however, use slot 0 to point towards something, e.g., the root of the net.
             nodes: UnsafeVec(vec![Node::EMP()]),
             redex: Default::default(),
+        };
+        #[cfg(feature = "prealloc")]
+        {
+            net.nodes.0.reserve(1000000000);
+            for redex in &mut net.redex {
+                redex.0.reserve(1000000000)
+            }
         }
+        net
     }
 }
 
@@ -844,5 +853,73 @@ mod tests {
         let ActivePair(l, r) = net.redex[RedexTy::FolR1 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "24.dot",; viz::mem_to_dot(&net));
+    }
+
+    fn infinite_reduction_net() -> Net {
+        let mut net = Net::default();
+        let (n1, n2, e1, e2) = net.alloc_node4();
+        net.nodes[n1.value() as usize] = Node {
+            left: Ptr::new(PtrTag::Era, e1),
+            right: Ptr::new(PtrTag::RightAux0, n2),
+        };
+        net.nodes[n2.value() as usize] = Node {
+            left: Ptr::new(PtrTag::Era, e2),
+            right: Ptr::IN(),
+        };
+        net.nodes[e1.value() as usize] = Node {
+            left: Ptr::IN(),
+            right: Ptr::new(PtrTag::LeftAux0, e1),
+        };
+        net.nodes[e2.value() as usize] = Node {
+            left: Ptr::IN(),
+            right: Ptr::new(PtrTag::LeftAux0, e2),
+        };
+        net.redex[RedexTy::Com as usize].push(ActivePair(
+            Ptr::new(PtrTag::Dup, n1),
+            Ptr::new(PtrTag::Con, n2),
+        ));
+        net
+    }
+
+    #[test]
+    fn speed_test() {
+        let mut net = infinite_reduction_net();
+        let mut i = 0;
+        let mut active_pairs_avg = 0usize;
+        let mut active_pairs_max = 0usize;
+        let start = std::time::Instant::now();
+        for _ in 0..10000000 {
+            active_pairs_avg += net.redex.iter().flat_map(|x| &x.0).count();
+            active_pairs_max = active_pairs_max.max(net.redex.iter().flat_map(|x| &x.0).count());
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
+                net.interact_ann(l, r);
+                i += 1;
+            }
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
+                net.interact_com(l, r);
+                i += 1;
+            }
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
+                net.interact_follow(l, r);
+                i += 1;
+            }
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
+                net.interact_follow(l, r);
+                i += 1;
+            }
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
+                net.interact_follow(l, r);
+                i += 1;
+            }
+            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
+                net.interact_follow(l, r);
+                i += 1;
+            }
+        }
+        let end = std::time::Instant::now();
+        eprintln!("Average active pairs {}", active_pairs_avg / 10000000);
+        eprintln!("Max active pairs {}", active_pairs_max);
+        eprintln!("Total time: {:?} for {i} interactions", end - start);
+        eprintln!("MIPS: {}", i / (end.duration_since(start)).as_micros());
     }
 }
