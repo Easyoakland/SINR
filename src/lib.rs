@@ -44,7 +44,8 @@ use core::{array, u32};
 use left_right::LeftRight;
 use macros::{trace, uassert, uunreachable};
 use std::simd::{
-    self, cmp::SimdPartialEq, num::SimdUint, ptr::SimdConstPtr, LaneCount, Simd, SupportedLaneCount,
+    self, cmp::SimdPartialEq, num::SimdUint, ptr::SimdConstPtr, LaneCount, Mask, Simd,
+    SupportedLaneCount,
 };
 use unsafe_vec::UnsafeVec;
 
@@ -70,11 +71,11 @@ pub enum PtrTag {
     RightAux0 = 0b01,
     LeftAux1 = 0b10,
     RightAux1 = 0b11,
-    Era = 4,
-    Con = 5,
-    Dup = 6,
+    Era = 0b100,
+    Con = 0b101,
+    Dup = 0b110,
     /// Don't use this. Free bit pattern. Maybe repurpose for packages?
-    _Unused = 7,
+    _Unused = 0b111,
 }
 impl core::fmt::Display for PtrTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -92,11 +93,9 @@ impl core::fmt::Display for PtrTag {
     }
 }
 impl PtrTag {
-    pub fn is_aux(self) -> bool {
-        matches!(
-            self,
-            PtrTag::LeftAux0 | PtrTag::RightAux0 | PtrTag::LeftAux1 | PtrTag::RightAux1
-        )
+    pub const LEN: usize = 7;
+    pub const fn is_aux(self) -> bool {
+        self as u8 <= Self::RightAux1 as u8
     }
     /// If currently stage 0 makes stage 1, and vice versa
     // TODO perf: use `val ^ 0b10` since this doesn't optimize out branches on its own.
@@ -226,7 +225,10 @@ impl ActivePair {
 /// - Follow r1: ?? <> RightAux1
 /// Note to avoid races only one of these redex queues can be operated on simultaneously.
 /// On the positive side, the queue being operated on can do so without any atomics whatsoever (including the follow wires rules).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
 enum RedexTy {
+    #[default]
     Ann,
     Com,
     FolL0,
@@ -234,8 +236,12 @@ enum RedexTy {
     FolR0,
     FolR1,
 }
+impl RedexTy {
+    pub const LEN: usize = 6;
+    pub const ZERO: Self = RedexTy::Ann;
+}
 
-type Redexes = [UnsafeVec<ActivePair>; 6];
+type Redexes = [UnsafeVec<ActivePair>; RedexTy::LEN];
 type Nodes = UnsafeVec<Node>;
 #[derive(Debug, Clone)]
 struct Net {
@@ -331,6 +337,182 @@ impl Net {
             (_, _) => (ActivePair::new(left, right), RedexTy::Com),
         };
         redexes[redex_ty as usize].push(redex);
+    }
+    #[inline]
+    pub fn active_pair_lut_batch<const N: usize>(
+        left: [Ptr; N],
+        right: [Ptr; N],
+    ) -> ([ActivePair; N], [RedexTy; N]) {
+        const LUT: [[RedexTy; PtrTag::LEN]; PtrTag::LEN] = {
+            let mut out = [[RedexTy::ZERO; PtrTag::LEN]; PtrTag::LEN];
+            use PtrTag::*;
+            use RedexTy::*;
+            out[Con as usize][Con as usize] = Ann;
+            out[Con as usize][Dup as usize] = Com;
+            out[Con as usize][Era as usize] = Com;
+            out[Con as usize][LeftAux0 as usize] = FolL0;
+            out[Con as usize][LeftAux1 as usize] = FolL1;
+            out[Con as usize][RightAux0 as usize] = FolR0;
+            out[Con as usize][RightAux1 as usize] = FolR1;
+
+            out[Dup as usize][Con as usize] = Com;
+            out[Dup as usize][Dup as usize] = Ann;
+            out[Dup as usize][Era as usize] = Com;
+            out[Dup as usize][LeftAux0 as usize] = FolL0;
+            out[Dup as usize][LeftAux1 as usize] = FolL1;
+            out[Dup as usize][RightAux0 as usize] = FolR0;
+            out[Dup as usize][RightAux1 as usize] = FolR1;
+
+            out[Era as usize][Con as usize] = Com;
+            out[Era as usize][Dup as usize] = Com;
+            out[Era as usize][Era as usize] = Ann;
+            out[Era as usize][LeftAux0 as usize] = FolL0;
+            out[Era as usize][LeftAux1 as usize] = FolL1;
+            out[Era as usize][RightAux0 as usize] = FolR0;
+            out[Era as usize][RightAux1 as usize] = FolR1;
+
+            out[LeftAux0 as usize][Con as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][Dup as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][Era as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][LeftAux0 as usize] = FolL0;
+            out[LeftAux0 as usize][LeftAux1 as usize] = FolL1;
+            out[LeftAux0 as usize][RightAux0 as usize] = FolR0;
+            out[LeftAux0 as usize][RightAux1 as usize] = FolR1;
+
+            out[LeftAux1 as usize][Con as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][Dup as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][Era as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][LeftAux0 as usize] = FolL0;
+            out[LeftAux1 as usize][LeftAux1 as usize] = FolL1;
+            out[LeftAux1 as usize][RightAux0 as usize] = FolR0;
+            out[LeftAux1 as usize][RightAux1 as usize] = FolR1;
+
+            out[RightAux0 as usize][Con as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][Dup as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][Era as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][LeftAux0 as usize] = FolL0;
+            out[RightAux0 as usize][LeftAux1 as usize] = FolL1;
+            out[RightAux0 as usize][RightAux0 as usize] = FolR0;
+            out[RightAux0 as usize][RightAux1 as usize] = FolR1;
+
+            out[RightAux1 as usize][Con as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][Dup as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][Era as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][LeftAux0 as usize] = FolL0;
+            out[RightAux1 as usize][LeftAux1 as usize] = FolL1;
+            out[RightAux1 as usize][RightAux0 as usize] = FolR0;
+            out[RightAux1 as usize][RightAux1 as usize] = FolR1;
+            out
+        };
+        let redexes = core::array::from_fn(|i| {
+            if !right[i].tag().is_aux() {
+                ActivePair(right[i], left[i])
+            } else {
+                ActivePair(left[i], right[i])
+            }
+        });
+        let ty = core::array::from_fn(|i| {
+            let l_idx = left[i].tag() as usize;
+            let r_idx = right[i].tag() as usize;
+            uassert!(l_idx < RedexTy::LEN);
+            uassert!(r_idx < RedexTy::LEN);
+            LUT[l_idx][r_idx]
+        });
+        (redexes, ty)
+    }
+    #[inline]
+    pub fn active_pair_lut_batch_manual<const N: usize>(
+        left: [Ptr; N],
+        right: [Ptr; N],
+    ) -> ([ActivePair; N], [RedexTy; N])
+    where
+        LaneCount<N>: SupportedLaneCount,
+    {
+        const LUT: [[RedexTy; PtrTag::LEN]; PtrTag::LEN] = {
+            let mut out = [[RedexTy::ZERO; PtrTag::LEN]; PtrTag::LEN];
+            use PtrTag::*;
+            use RedexTy::*;
+            out[Con as usize][Con as usize] = Ann;
+            out[Con as usize][Dup as usize] = Com;
+            out[Con as usize][Era as usize] = Com;
+            out[Con as usize][LeftAux0 as usize] = FolL0;
+            out[Con as usize][LeftAux1 as usize] = FolL1;
+            out[Con as usize][RightAux0 as usize] = FolR0;
+            out[Con as usize][RightAux1 as usize] = FolR1;
+
+            out[Dup as usize][Con as usize] = Com;
+            out[Dup as usize][Dup as usize] = Ann;
+            out[Dup as usize][Era as usize] = Com;
+            out[Dup as usize][LeftAux0 as usize] = FolL0;
+            out[Dup as usize][LeftAux1 as usize] = FolL1;
+            out[Dup as usize][RightAux0 as usize] = FolR0;
+            out[Dup as usize][RightAux1 as usize] = FolR1;
+
+            out[Era as usize][Con as usize] = Com;
+            out[Era as usize][Dup as usize] = Com;
+            out[Era as usize][Era as usize] = Ann;
+            out[Era as usize][LeftAux0 as usize] = FolL0;
+            out[Era as usize][LeftAux1 as usize] = FolL1;
+            out[Era as usize][RightAux0 as usize] = FolR0;
+            out[Era as usize][RightAux1 as usize] = FolR1;
+
+            out[LeftAux0 as usize][Con as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][Dup as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][Era as usize] = RedexTy::ZERO;
+            out[LeftAux0 as usize][LeftAux0 as usize] = FolL0;
+            out[LeftAux0 as usize][LeftAux1 as usize] = FolL1;
+            out[LeftAux0 as usize][RightAux0 as usize] = FolR0;
+            out[LeftAux0 as usize][RightAux1 as usize] = FolR1;
+
+            out[LeftAux1 as usize][Con as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][Dup as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][Era as usize] = RedexTy::ZERO;
+            out[LeftAux1 as usize][LeftAux0 as usize] = FolL0;
+            out[LeftAux1 as usize][LeftAux1 as usize] = FolL1;
+            out[LeftAux1 as usize][RightAux0 as usize] = FolR0;
+            out[LeftAux1 as usize][RightAux1 as usize] = FolR1;
+
+            out[RightAux0 as usize][Con as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][Dup as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][Era as usize] = RedexTy::ZERO;
+            out[RightAux0 as usize][LeftAux0 as usize] = FolL0;
+            out[RightAux0 as usize][LeftAux1 as usize] = FolL1;
+            out[RightAux0 as usize][RightAux0 as usize] = FolR0;
+            out[RightAux0 as usize][RightAux1 as usize] = FolR1;
+
+            out[RightAux1 as usize][Con as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][Dup as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][Era as usize] = RedexTy::ZERO;
+            out[RightAux1 as usize][LeftAux0 as usize] = FolL0;
+            out[RightAux1 as usize][LeftAux1 as usize] = FolL1;
+            out[RightAux1 as usize][RightAux0 as usize] = FolR0;
+            out[RightAux1 as usize][RightAux1 as usize] = FolR1;
+            out
+        };
+        let redexes = core::array::from_fn(|i| {
+            if !right[i].tag().is_aux() {
+                ActivePair(right[i], left[i])
+            } else {
+                ActivePair(left[i], right[i])
+            }
+        });
+        // Safety: Ptr is repr(transparent) of u32.
+        let left: [u32; N] = unsafe { core::mem::transmute_copy(&left) };
+        let right: [u32; N] = unsafe { core::mem::transmute_copy(&right) };
+        let left = Simd::from_array(left);
+        let right = Simd::from_array(right);
+        let idxs = left.cast::<usize>()
+            & Simd::splat(PtrTag::BITS) * Simd::splat(PtrTag::LEN) + right.cast::<usize>()
+            & Simd::splat(PtrTag::BITS);
+        let lut: &[RedexTy] = LUT.as_flattened();
+        let lut: &[u8] = unsafe { core::mem::transmute(lut) };
+        // Safety: by construction the lut is large enough for all tag values.
+        // TODO check if gather_select_unchecked is faster than gather_or
+        let ty =
+            unsafe { Simd::gather_select_unchecked(lut, Mask::splat(true), idxs, Simd::splat(0)) };
+        let ty = ty.to_array();
+        let ty: [RedexTy; N] = unsafe { core::mem::transmute_copy(&ty) };
+        (redexes, ty)
     }
     /// `ptr_to_fst` should point to `fst` with stage 1.
     #[inline]
@@ -457,11 +639,13 @@ static INTERACT_ANN: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
     core::hint::black_box(n);
 };
 #[used]
-static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
-    for (l, r) in core::iter::zip(l, r) {
-        Net::interact_com(n, l, r);
+static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = {
+    fn interact_com_batch<const N: usize>(n: &mut Net, l: [Ptr; N], r: [Ptr; N]) {
+        for (l, r) in core::iter::zip(l, r) {
+            Net::interact_com(n, l, r);
+        }
     }
-    core::hint::black_box(n);
+    interact_com_batch::<256>
 };
 
 #[used]
@@ -474,6 +658,11 @@ static ADD_ACTIVE_PAIR: fn(&mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 
     }
     add_active_pair_batch
 };
+#[used]
+static ADD_ACTIVE_PAIR_LUT_BATCH: fn(
+    left_ptr: [Ptr; 64],
+    right_ptr: [Ptr; 64],
+) -> ([ActivePair; 64], [RedexTy; 64]) = Net::active_pair_lut_batch::<64>;
 
 #[cfg(test)]
 mod tests {
