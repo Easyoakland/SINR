@@ -1,4 +1,4 @@
-use crate::{left_right::LeftRight, ActivePair, Net, Ptr, PtrTag};
+use crate::{left_right::LeftRight, Net, Ptr, PtrTag, Redex};
 use bilge::prelude::u29;
 use petgraph::{dot::Dot, Directed};
 use std::collections::HashSet;
@@ -11,7 +11,7 @@ fn viz_graph(viz: &VizGraph) -> String {
 pub fn mem_to_dot(mem: &Net) -> String {
     let active_nodes = mem.redex.iter().map(|x| &x.0).flatten();
     let color_active_nodes = active_nodes
-        .map(|ActivePair(x, y)| {
+        .map(|Redex(x, y)| {
             format!(
                 "A{0}_{1} [color = \"red\"]\n\
                 {0} [color = \"red\"]\n\
@@ -98,7 +98,7 @@ fn mem_to_graph(net: &Net) -> VizGraph {
         .redex
         .iter()
         .flat_map(|x| x.0.iter())
-        .flat_map(|ActivePair(x, y)| [x, y])
+        .flat_map(|Redex(x, y)| [x, y])
     {
         let w = graph.node_weight_mut(to.slot_u32().into()).unwrap();
         if !w.is_empty() {

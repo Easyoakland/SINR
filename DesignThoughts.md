@@ -16,7 +16,7 @@ The alternative is a substitution map indexed by the auxiliary pointer, but I do
 
 
 # SIMD
-- Either place all active pairs in the same queue and sort them scalar into queues before running each queue in SIMD, or sort active pairs when placing them.
+- Either place all redexes in the same queue and sort them scalar into queues before running each queue in SIMD, or sort active pairs when placing them.
     - The second might prevent SIMD on interactions themselves because they have to branch which stack to place in, so the pushes aren't SIMDable
         - What about an unsorted buffer that is sorted at the end? Maybe that will enable doing everything SIMD, then scalar sorting the unsorted stack into the right redex_ty/bucket.
         - The scalar code will run an exact amount of loop iterations, which is nicer than the other option of running an indeterminate amount of time until a local queue has enough to perform a SIMD.

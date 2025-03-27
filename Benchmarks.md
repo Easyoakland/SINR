@@ -1,7 +1,7 @@
 On AMD Ryzen 5 7640U for speed_test of infinite net single-threaded, scalar, no memory re-use.
 ```
-Average active pairs 277781
-Max active pairs 555560
+Average redexes 277781
+Max redexes 555560
 Total time: 245.3175ms for 32222221 interactions
 MIPS: 131
 ```
@@ -14,8 +14,8 @@ MIPS: 56
 
 On Intel Core i9-10900K for speed_test of infinite net single-threaded, scalar, no memory re-use.
 ```
-Average active pairs 277781
-Max active pairs 555560
+Average redexes 277781
+Max redexes 555560
 Total time: 153.155ms for 32222221 interactions
 MIPS: 210
 ```
@@ -26,7 +26,7 @@ Total time: 144.6203ms for 12222223 interactions
 MIPS: 84
 ```
 
-Not tracking active pair stats
+Not tracking redex stats
 ```
 Total time: 139.5743ms for 32222221 interactions
 MIPS: 230

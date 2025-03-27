@@ -4,7 +4,7 @@
 //!
 //! # Layout
 //! ## Nodes
-//! Nodes are represented as 2 tagged pointers and active pairs as 2 tagged pointers. Nodes may have 0, 1, or 2 auxiliary ports. Although all currently implemented nodes are 2-ary others should work.
+//! Nodes are represented as 2 tagged pointers and redexes as 2 tagged pointers. Nodes may have 0, 1, or 2 auxiliary ports. Although all currently implemented nodes are 2-ary others should work.
 //! ## Node tagged pointers
 //! Tagged pointers contain a target and the type of the target they point to.
 //! A Pointer is either "out" in which case its target is one of the [`PtrTag`] variants, `IN`, in which case it has no target, or `EMP` in which case it represents unallocated memory. The [`PtrTag`] represents the different principal port types, and the 4 auxiliary port types.
@@ -14,7 +14,7 @@
 //! The reason that left and right follow interactions must be separated is to deallocate nodes only once both pointers in the node are no longer in use. This simplifies memory deallocation (TODO) by preventing any fragmentation (holes) less than a node in size. If this turns out to not be sufficiently useful, then left and right auxiliary follows can be performed simultaneously, only synchronizing between stage 0, 1, and principal interaction.
 //!
 //! # Reduction
-//! All redexes (active pairs) are stored into one of several redex buffers based upon the redex's interaction type, [`RedexTy`]. The regular commute and annihilate are two interactions. So are the 4 possible follow operations depending on the type of the auxiliary target. By separating the operations into these 2+4 types it becomes possible to perform all operations of the same type with minimal branching (for SIMD) and without atomic synchronization (for CPU SIMD and general perf improvements). All threads and SIMD lanes operate reduce the same interaction type at the same time. When one of the threads runs out of reductions of that type (or some other signal such as number of reductions) all the threads synchronize their memory and start simultaneously reducing operations of a new type.
+//! All redexes are stored into one of several redex buffers based upon the redex's interaction type, [`RedexTy`]. The regular commute and annihilate are two interactions. So are the 4 possible follow operations depending on the type of the auxiliary target. By separating the operations into these 2+4 types it becomes possible to perform all operations of the same type with minimal branching (for SIMD) and without atomic synchronization (for CPU SIMD and general perf improvements). All threads and SIMD lanes operate reduce the same interaction type at the same time. When one of the threads runs out of reductions of that type (or some other signal such as number of reductions) all the threads synchronize their memory and start simultaneously reducing operations of a new type.
 //! # Future possibilities
 //! ## Amb nodes
 //! Since this design allows for synchronizing multiple pointers to a single port without atomics, implementing amb (a 2 principal port node) should be as simple as an FollowAmb0 and FollowAmb1 interactions.
@@ -209,8 +209,8 @@ impl Node {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
-struct ActivePair(Ptr, Ptr);
-impl ActivePair {
+struct Redex(Ptr, Ptr);
+impl Redex {
     #[inline]
     pub fn new(left: Ptr, right: Ptr) -> Self {
         Self(left, right)
@@ -241,7 +241,7 @@ impl RedexTy {
     pub const ZERO: Self = RedexTy::Ann;
 }
 
-type Redexes = [UnsafeVec<ActivePair>; RedexTy::LEN];
+type Redexes = [UnsafeVec<Redex>; RedexTy::LEN];
 type Nodes = UnsafeVec<Node>;
 #[derive(Debug, Clone)]
 struct Net {
@@ -325,7 +325,7 @@ impl Net {
         (a, b, c, d)
     }
     #[inline]
-    pub fn add_active_pair(redexes: &mut Redexes, left: Ptr, right: Ptr) {
+    pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
         // TODO: find a non-branching algorithm for this. Probably going to be a LUT.
         uassert!(left.tag() != PtrTag::_Unused);
         uassert!(right.tag() != PtrTag::_Unused);
@@ -334,24 +334,24 @@ impl Net {
         uassert!(left != Ptr::IN());
         uassert!(right != Ptr::IN());
         let (redex, redex_ty) = match (left.tag(), right.tag()) {
-            (_, PtrTag::LeftAux0) => (ActivePair::new(left, right), RedexTy::FolL0),
-            (_, PtrTag::LeftAux1) => (ActivePair::new(left, right), RedexTy::FolL1),
-            (_, PtrTag::RightAux0) => (ActivePair::new(left, right), RedexTy::FolR0),
-            (_, PtrTag::RightAux1) => (ActivePair::new(left, right), RedexTy::FolR1),
-            (PtrTag::LeftAux0, _) => (ActivePair::new(right, left), RedexTy::FolL0),
-            (PtrTag::LeftAux1, _) => (ActivePair::new(right, left), RedexTy::FolL1),
-            (PtrTag::RightAux0, _) => (ActivePair::new(right, left), RedexTy::FolR0),
-            (PtrTag::RightAux1, _) => (ActivePair::new(right, left), RedexTy::FolR1),
-            (x, y) if x == y => (ActivePair::new(left, right), RedexTy::Ann),
-            (_, _) => (ActivePair::new(left, right), RedexTy::Com),
+            (_, PtrTag::LeftAux0) => (Redex::new(left, right), RedexTy::FolL0),
+            (_, PtrTag::LeftAux1) => (Redex::new(left, right), RedexTy::FolL1),
+            (_, PtrTag::RightAux0) => (Redex::new(left, right), RedexTy::FolR0),
+            (_, PtrTag::RightAux1) => (Redex::new(left, right), RedexTy::FolR1),
+            (PtrTag::LeftAux0, _) => (Redex::new(right, left), RedexTy::FolL0),
+            (PtrTag::LeftAux1, _) => (Redex::new(right, left), RedexTy::FolL1),
+            (PtrTag::RightAux0, _) => (Redex::new(right, left), RedexTy::FolR0),
+            (PtrTag::RightAux1, _) => (Redex::new(right, left), RedexTy::FolR1),
+            (x, y) if x == y => (Redex::new(left, right), RedexTy::Ann),
+            (_, _) => (Redex::new(left, right), RedexTy::Com),
         };
         redexes[redex_ty as usize].push(redex);
     }
     #[inline]
-    pub fn active_pair_lut_batch<const N: usize>(
+    pub fn redex_lut_batch<const N: usize>(
         left: [Ptr; N],
         right: [Ptr; N],
-    ) -> ([ActivePair; N], [RedexTy; N]) {
+    ) -> ([Redex; N], [RedexTy; N]) {
         const LUT: [[RedexTy; PtrTag::LEN]; PtrTag::LEN] = {
             let mut out = [[RedexTy::ZERO; PtrTag::LEN]; PtrTag::LEN];
             use PtrTag::*;
@@ -415,9 +415,9 @@ impl Net {
         };
         let redexes = core::array::from_fn(|i| {
             if !right[i].tag().is_aux() {
-                ActivePair(right[i], left[i])
+                Redex(right[i], left[i])
             } else {
-                ActivePair(left[i], right[i])
+                Redex(left[i], right[i])
             }
         });
         let ty = core::array::from_fn(|i| {
@@ -430,10 +430,10 @@ impl Net {
         (redexes, ty)
     }
     #[inline]
-    pub fn active_pair_lut_batch_manual<const N: usize>(
+    pub fn redex_lut_batch_manual<const N: usize>(
         left: [Ptr; N],
         right: [Ptr; N],
-    ) -> ([ActivePair; N], [RedexTy; N])
+    ) -> ([Redex; N], [RedexTy; N])
     where
         LaneCount<N>: SupportedLaneCount,
     {
@@ -500,9 +500,9 @@ impl Net {
         };
         let redexes = core::array::from_fn(|i| {
             if !right[i].tag().is_aux() {
-                ActivePair(right[i], left[i])
+                Redex(right[i], left[i])
             } else {
-                ActivePair(left[i], right[i])
+                Redex(left[i], right[i])
             }
         });
         // Safety: Ptr is repr(transparent) of u32.
@@ -543,7 +543,7 @@ impl Net {
             }
             (false, false) => {
                 // TODO dealloc both sides ports
-                Self::add_active_pair(redexes, *fst, *snd)
+                Self::add_redex(redexes, *fst, *snd)
             }
         }
     }
@@ -575,7 +575,7 @@ impl Net {
         let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
         let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
 
-        // Leave redirect from old nodes to new node's primary port for each of ll,lr,rl,rr that was Ptr::IN(). Rest are new active pairs.
+        // Leave redirect from old nodes to new node's primary port for each of ll,lr,rl,rr that was Ptr::IN(). Rest are new redexes.
         // `a` is the aux
         // `b` is the new primary port of the new node
         // ll and lr are now of type rt
@@ -590,7 +590,7 @@ impl Net {
             if *a == Ptr::IN() {
                 *a = b // redirect to the new principal port
             } else {
-                Self::add_active_pair(&mut self.redex, b, *a);
+                Self::add_redex(&mut self.redex, b, *a);
                 // TODO free port a's original location
             }
         }
@@ -616,7 +616,7 @@ impl Net {
         };
     }
 
-    /// Interact an active pair where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
+    /// Interact an redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
     pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
         uassert!(!matches!(
             right.tag(),
@@ -633,7 +633,7 @@ impl Net {
             *target = left;
         } else {
             // otherwise it's a redirect which must be followed again.
-            Self::add_active_pair(&mut self.redex, left, *target);
+            Self::add_redex(&mut self.redex, left, *target);
             // TODO free original target port location
         }
     }
@@ -658,20 +658,20 @@ static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
 };
 
 #[used]
-static ADD_ACTIVE_PAIR: fn(&mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = {
-    fn add_active_pair_batch(n: &mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) {
+static ADD_REDEX: fn(&mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = {
+    fn add_redex_batch(n: &mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) {
         for (l, r) in core::iter::zip(left_ptr, right_ptr) {
-            Net::add_active_pair(n, l, r);
+            Net::add_redex(n, l, r);
         }
         core::hint::black_box(n);
     }
-    add_active_pair_batch
+    add_redex_batch
 };
 #[used]
-static ADD_ACTIVE_PAIR_LUT_BATCH: fn(
+static ADD_REDEX_LUT_BATCH: fn(
     left_ptr: [Ptr; 64],
     right_ptr: [Ptr; 64],
-) -> ([ActivePair; 64], [RedexTy; 64]) = Net::active_pair_lut_batch::<64>;
+) -> ([Redex; 64], [RedexTy; 64]) = Net::redex_lut_batch::<64>;
 
 #[cfg(test)]
 mod tests {
@@ -688,7 +688,7 @@ mod tests {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, u29::new(2)),
         });
-        net.redex[RedexTy::Ann as usize].push(ActivePair(
+        net.redex[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, u29::new(1)),
             Ptr::new(PtrTag::Con, u29::new(2)),
         ));
@@ -716,7 +716,7 @@ mod tests {
             left: Ptr::new(PtrTag::Con, u29::new(3)),
             right: Ptr::new(PtrTag::Con, u29::new(4)),
         });
-        net.redex[RedexTy::Ann as usize].push(ActivePair(
+        net.redex[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, u29::new(5)),
             Ptr::new(PtrTag::Con, u29::new(6)),
         ));
@@ -728,13 +728,13 @@ mod tests {
     fn test_ann() {
         let mut net = _2layer_con_net();
         trace!(file "0.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "1.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "2.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         dbg!(&net.redex);
         net.interact_follow(l, r);
         trace!(file "3.dot",; viz::mem_to_dot(&net));
@@ -761,7 +761,7 @@ mod tests {
             left: Ptr::new(PtrTag::Con, u29::new(3)),
             right: Ptr::new(PtrTag::Con, u29::new(4)),
         });
-        net.redex[RedexTy::Com as usize].push(ActivePair(
+        net.redex[RedexTy::Com as usize].push(Redex(
             Ptr::new(PtrTag::Con, u29::new(5)),
             Ptr::new(PtrTag::Dup, u29::new(6)),
         ));
@@ -773,52 +773,52 @@ mod tests {
     fn test_com() {
         let mut net = _2layer_con_dup_net();
         trace!(file "0.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
         net.interact_com(l, r);
         trace!(file "1.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "2.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
         net.interact_com(l, r);
         trace!(file "3.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "4.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "5.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "6.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "7.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
         net.interact_com(l, r);
         trace!(file "8.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "9.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "10.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "11.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "12.dot",; viz::mem_to_dot(&net)); // note LeftAux1 used here in 12L->16L1
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "13.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "14.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "15.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         // Note this will never happen
         // but this is the easiest way to confirm that the stage0,1 technique will prevent the race.
         // If this doesn't happen the bad case will trivially not occur, but I want to try the bad case.
@@ -826,31 +826,31 @@ mod tests {
         let (r, l) = (l, r);
         net.interact_follow(l, r);
         trace!(file "16.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "17.dot",; viz::mem_to_dot(&net));
         // And here we see the stage method will prevent a race. Either RedexTy::FolL0 or RedexTy::FolL1 will run next, but not both simultaneously.
         // Admittedly, this isn't a great example because of the circular path of the node onto itself, and the fact that the node is only in 1 redex, but the hopefully the idea is clear.
         // If it were in two redexes, one that wanted to follow L0 and one that wanted to follow L1, then they wouldn't conflict because they are in different stages.
-        let ActivePair(l, r) = net.redex[RedexTy::FolL1 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL1 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "18.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "19.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "20.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "21.dot",; viz::mem_to_dot(&net)); // and here's an R1 generated
-        let ActivePair(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "22.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "23.dot",; viz::mem_to_dot(&net));
-        let ActivePair(l, r) = net.redex[RedexTy::FolR1 as usize].pop().unwrap();
+        let Redex(l, r) = net.redex[RedexTy::FolR1 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "24.dot",; viz::mem_to_dot(&net));
     }
@@ -874,10 +874,8 @@ mod tests {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, e2),
         };
-        net.redex[RedexTy::Com as usize].push(ActivePair(
-            Ptr::new(PtrTag::Dup, n1),
-            Ptr::new(PtrTag::Con, n2),
-        ));
+        net.redex[RedexTy::Com as usize]
+            .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
         net
     }
 
@@ -885,40 +883,40 @@ mod tests {
     fn speed_test() {
         let mut net = infinite_reduction_net();
         let mut i = 0;
-        let mut active_pairs_avg = 0usize;
-        let mut active_pairs_max = 0usize;
+        let mut redexes_avg = 0usize;
+        let mut redexes_max = 0usize;
         let start = std::time::Instant::now();
         for _ in 0..10000000 {
-            active_pairs_avg += net.redex.iter().flat_map(|x| &x.0).count();
-            active_pairs_max = active_pairs_max.max(net.redex.iter().flat_map(|x| &x.0).count());
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
+            redexes_avg += net.redex.iter().flat_map(|x| &x.0).count();
+            redexes_max = redexes_max.max(net.redex.iter().flat_map(|x| &x.0).count());
+            if let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
                 net.interact_ann(l, r);
                 i += 1;
             }
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
+            if let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
                 net.interact_com(l, r);
                 i += 1;
             }
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
+            if let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
+            if let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
+            if let Some(Redex(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(ActivePair(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
+            if let Some(Redex(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
         }
         let end = std::time::Instant::now();
-        eprintln!("Average active pairs {}", active_pairs_avg / 10000000);
-        eprintln!("Max active pairs {}", active_pairs_max);
+        eprintln!("Average redexes {}", redexes_avg / 10000000);
+        eprintln!("Max redexes {}", redexes_max);
         eprintln!("Total time: {:?} for {i} interactions", end - start);
         eprintln!("MIPS: {}", i / (end.duration_since(start)).as_micros());
     }
