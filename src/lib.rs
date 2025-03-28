@@ -348,7 +348,58 @@ impl Net {
         redexes[redex_ty as usize].push(redex);
     }
     #[inline]
-    pub fn redex_lut_batch<const N: usize>(
+    pub fn new_redex(left: Ptr, right: Ptr) -> (Redex, RedexTy) {
+        // TODO: find a non-branching algorithm for this. Probably going to be a LUT.
+        uassert!(left.tag() != PtrTag::_Unused);
+        uassert!(right.tag() != PtrTag::_Unused);
+        uassert!(left != Ptr::EMP());
+        uassert!(right != Ptr::EMP());
+        uassert!(left != Ptr::IN());
+        uassert!(right != Ptr::IN());
+        let (redex, redex_ty) = match (left.tag(), right.tag()) {
+            (_, PtrTag::LeftAux0) => (Redex::new(left, right), RedexTy::FolL0),
+            (_, PtrTag::LeftAux1) => (Redex::new(left, right), RedexTy::FolL1),
+            (_, PtrTag::RightAux0) => (Redex::new(left, right), RedexTy::FolR0),
+            (_, PtrTag::RightAux1) => (Redex::new(left, right), RedexTy::FolR1),
+            (PtrTag::LeftAux0, _) => (Redex::new(right, left), RedexTy::FolL0),
+            (PtrTag::LeftAux1, _) => (Redex::new(right, left), RedexTy::FolL1),
+            (PtrTag::RightAux0, _) => (Redex::new(right, left), RedexTy::FolR0),
+            (PtrTag::RightAux1, _) => (Redex::new(right, left), RedexTy::FolR1),
+            (x, y) if x == y => (Redex::new(right, left), RedexTy::Ann),
+            (_, _) => (Redex::new(right, left), RedexTy::Com),
+        };
+        (redex, redex_ty)
+    }
+    #[inline]
+    pub fn add_redex_batch<const N: usize>(redexes: &mut Redexes, left: [Ptr; N], right: [Ptr; N])
+    where
+        LaneCount<N>: SupportedLaneCount,
+    {
+        let to_add @ (_redex, _redex_ty) = Net::new_redex_lut_batch_manual(left, right);
+        // TODO unsafe reserve function for feature = "prealloc"
+        // TODO try: SIMD by compare <= RedexTy::LEN/2, then repeat 2 more times to get 4 separate array each containing 1 or 2 of each type.
+        // Then use SIMD compact technique to fit the 2 types to compact on ends of array.
+        // Finally, reserve N on all redex types, push whole array with SIMD, and set_len (mask_bits_popcnt) to remove garbage on the end.
+        Self::add_redex_finish_masked(redexes, to_add, core::array::from_fn(|_| true));
+    }
+    #[inline]
+    pub fn add_redex_finish_masked<const N: usize>(
+        redexes: &mut Redexes,
+        (redex, redex_ty): ([Redex; N], [RedexTy; N]),
+        mask: [bool; N],
+    ) {
+        // TODO unsafe reserve function for feature = "prealloc"
+        // TODO try: SIMD by compare <= RedexTy::LEN/2, then repeat 2 more times to get 4 separate array each containing 1 or 2 of each type.
+        // Then use SIMD compact technique to fit the 2 types to compact on ends of array.
+        // Finally, reserve N on all redex types, push whole array with SIMD, and set_len (mask_bits_popcnt) to remove garbage on the end.
+        for ((redex, redex_ty), mask) in core::iter::zip(redex, redex_ty).zip(mask) {
+            if mask {
+                redexes[redex_ty as usize].push(redex)
+            }
+        }
+    }
+    #[inline]
+    pub fn new_redex_lut_batch<const N: usize>(
         left: [Ptr; N],
         right: [Ptr; N],
     ) -> ([Redex; N], [RedexTy; N]) {
@@ -430,9 +481,9 @@ impl Net {
         (redexes, ty)
     }
     #[inline]
-    pub fn redex_lut_batch_manual<const N: usize>(
-        left: [Ptr; N],
-        right: [Ptr; N],
+    pub fn new_redex_lut_batch_manual<const N: usize>(
+        mut left: [Ptr; N],
+        mut right: [Ptr; N],
     ) -> ([Redex; N], [RedexTy; N])
     where
         LaneCount<N>: SupportedLaneCount,
@@ -498,21 +549,21 @@ impl Net {
             out[RightAux1 as usize][RightAux1 as usize] = FolR1;
             out
         };
-        let redexes = core::array::from_fn(|i| {
-            if !right[i].tag().is_aux() {
-                Redex(right[i], left[i])
-            } else {
-                Redex(left[i], right[i])
-            }
-        });
+        for (l, r) in core::iter::zip(&mut left, &mut right) {
+            if !r.tag().is_aux() {
+                core::mem::swap(l, r)
+            };
+        }
+        let redexes = core::array::from_fn(|i| Redex(left[i], right[i]));
+
         // Safety: Ptr is repr(transparent) of u32.
         let left: [u32; N] = unsafe { core::mem::transmute_copy(&left) };
         let right: [u32; N] = unsafe { core::mem::transmute_copy(&right) };
         let left = Simd::from_array(left);
         let right = Simd::from_array(right);
-        let idxs = left.cast::<usize>()
-            & Simd::splat(PtrTag::BITS) * Simd::splat(PtrTag::LEN) + right.cast::<usize>()
-            & Simd::splat(PtrTag::BITS);
+        let idxs = ((left.cast::<usize>() & Simd::splat((1 << PtrTag::BITS) - 1))
+            * Simd::splat(PtrTag::LEN))
+            + (right.cast::<usize>() & Simd::splat((1 << PtrTag::BITS) - 1));
 
         let lut: &[RedexTy] = LUT.as_flattened();
         let lut: &[u8] = unsafe { core::mem::transmute(lut) };
@@ -642,6 +693,45 @@ impl Net {
             // TODO free original target port location
         }
     }
+    /// Interact an redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
+    pub fn interact_follow_batch<const N: usize>(&mut self, left: [Ptr; N], right: [Ptr; N])
+    where
+        LaneCount<N>: SupportedLaneCount,
+    {
+        // TODO this is the same code as in `interact_comm`
+        // if target isn't a redirect
+        let target_ptrs: [_; N] = core::array::from_fn(|i| {
+            let right = right[i];
+            uassert!(!matches!(
+                right.tag(),
+                PtrTag::Con | PtrTag::Dup | PtrTag::Era
+            ));
+
+            let target = match right.tag().aux_side() {
+                LeftRight::Left => &mut self.nodes[right.slot_usize()].left,
+                LeftRight::Right => &mut self.nodes[right.slot_usize()].right,
+            };
+            // Safety: Dereferencing the result is valid until `self` is accessed by mut again.
+            target as *mut _
+        });
+        let target = core::array::from_fn(|i| unsafe { *target_ptrs[i] });
+        let mut count = 0u8;
+        let mask_not_redirect: [bool; N] = core::array::from_fn(|i| {
+            count += 1;
+            unsafe { *target_ptrs[i] == Ptr::IN() }
+        });
+        for ((mask, target), left) in core::iter::zip(mask_not_redirect, target_ptrs).zip(&left) {
+            if mask {
+                unsafe { *target = *left }
+            }
+        }
+        // TODO look at how often certain outputs come from to_add. e.g. I've noticed that Follows often beget follows. That might be a fast-path.
+        let to_add = Self::new_redex_lut_batch_manual(left, target);
+        let mask_to_redirect = core::array::from_fn(|i| !mask_not_redirect[i]);
+        // otherwise it's a redirect which must be followed again.
+        Self::add_redex_finish_masked(&mut self.redex, to_add, mask_to_redirect);
+        // TODO free original target port location
+    }
 }
 
 // Make asm generate for the function.
@@ -663,20 +753,21 @@ static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
 };
 
 #[used]
-static ADD_REDEX: fn(&mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = {
-    fn add_redex_batch(n: &mut Redexes, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) {
-        for (l, r) in core::iter::zip(left_ptr, right_ptr) {
-            Net::add_redex(n, l, r);
-        }
-        core::hint::black_box(n);
-    }
-    add_redex_batch
-};
+static ADD_REDEX: fn(&mut Redexes, left_ptr: [Ptr; 64], right_ptr: [Ptr; 64]) =
+    Net::add_redex_batch::<64>;
 #[used]
 static ADD_REDEX_LUT_BATCH: fn(
     left_ptr: [Ptr; 64],
     right_ptr: [Ptr; 64],
-) -> ([Redex; 64], [RedexTy; 64]) = Net::redex_lut_batch::<64>;
+) -> ([Redex; 64], [RedexTy; 64]) = Net::new_redex_lut_batch::<64>;
+#[used]
+static ADD_REDEX_LUT_BATCH_MANUAL: fn(
+    left_ptr: [Ptr; 64],
+    right_ptr: [Ptr; 64],
+) -> ([Redex; 64], [RedexTy; 64]) = Net::new_redex_lut_batch_manual::<64>;
+#[used]
+static INTERACT_FOLLOW_BATCH: fn(&mut Net, left: [Ptr; 64], right: [Ptr; 64]) =
+    Net::interact_follow_batch::<64>;
 
 #[cfg(test)]
 mod tests {
@@ -884,6 +975,34 @@ mod tests {
         net
     }
 
+    macro_rules! simd_follow {
+        ($net:expr, $i:expr, $ty:ident) => {
+            let net = &mut $net;
+            if net.redex[RedexTy::$ty as usize].len() >= 64 {
+                trace!(file "start.dot",;viz::mem_to_dot(&net));
+                // TODO split_at{_mut} for UnsafeVec
+                let v = &net.redex[RedexTy::$ty as usize];
+                // Sanity check: if v.len() == 64 prefix slice is [0..0) i.e. empty and suffix is [64-len..len) i.e. everything.
+                // Safety: Just checked the length >= 64
+                let (_prefix, suffix) = unsafe { v.0.split_at_unchecked(v.len() - 64) };
+                let left = core::array::from_fn(|i| {
+                    uassert!(suffix.len() > i);
+                    suffix[i].0
+                });
+                let right = core::array::from_fn(|i| {
+                    uassert!(suffix.len() > i);
+                    suffix[i].1
+                });
+                net.interact_follow_batch::<64>(left, right);
+                let v = &mut net.redex[RedexTy::$ty as usize].0;
+                unsafe {
+                    v.set_len(v.len() - 64);
+                }
+
+                $i += 64;
+            }
+        };
+    }
     #[test]
     fn speed_test() {
         let mut net = infinite_reduction_net();
@@ -894,14 +1013,35 @@ mod tests {
         for _ in 0..10000000 {
             redexes_avg += net.redex.iter().flat_map(|x| &x.0).count();
             redexes_max = redexes_max.max(net.redex.iter().flat_map(|x| &x.0).count());
+            // eprintln!(
+            //     "{:?}",
+            //     net.redex.iter().map(|x| x.len()).collect::<Vec<_>>()
+            // );
+            let mut cont = false;
             if let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
                 net.interact_ann(l, r);
                 i += 1;
+                cont = true;
             }
             if let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
                 net.interact_com(l, r);
                 i += 1;
+                cont = true;
             }
+            simd_follow!(net, i, FolL0);
+            simd_follow!(net, i, FolR0);
+            if cont {
+                continue;
+            }
+            // if net.redex[RedexTy::Ann as usize..RedexTy::Com as usize]
+            //     .iter()
+            //     .map(|x| x.len())
+            //     .max()
+            //     .unwrap()
+            //     > 0
+            // {
+            //     continue;
+            // }
             if let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
@@ -924,5 +1064,33 @@ mod tests {
         eprintln!("Max redexes {}", redexes_max);
         eprintln!("Total time: {:?} for {i} interactions", end - start);
         eprintln!("MIPS: {}", i / (end.duration_since(start)).as_micros());
+    }
+
+    #[test]
+    fn redex_lut_match_scalar() {
+        let all_ptr_tag = (0..7u8).map(|x| PtrTag::from(u3::new(x)));
+        let mut scalar_res_v = Vec::new();
+        let mut all_left = Vec::new();
+        let mut all_right = Vec::new();
+        for left in all_ptr_tag.clone() {
+            for right in all_ptr_tag.clone() {
+                let left = Ptr::new(left, u29::new(42));
+                let right = Ptr::new(right, u29::new(43));
+                all_left.push(left);
+                all_right.push(right);
+                let scalar_res = Net::new_redex(left, right);
+                scalar_res_v.push(scalar_res);
+                let scalar_res = ([scalar_res.0], [scalar_res.1]);
+                let vector_res = Net::new_redex_lut_batch_manual::<1>([left], [right]);
+                assert_eq!(scalar_res, vector_res);
+            }
+        }
+        let vector_res = Net::new_redex_lut_batch_manual::<49>(
+            core::array::from_fn(|i| all_left[i]),
+            core::array::from_fn(|i| all_right[i]),
+        );
+        let scalar_res_redex = core::array::from_fn(|i| scalar_res_v[i].0);
+        let scalar_res_ty = core::array::from_fn(|i| scalar_res_v[i].1);
+        assert_eq!(vector_res, (scalar_res_redex, scalar_res_ty));
     }
 }
