@@ -423,8 +423,8 @@ impl Net {
         let ty = core::array::from_fn(|i| {
             let l_idx = left[i].tag() as usize;
             let r_idx = right[i].tag() as usize;
-            uassert!(l_idx < RedexTy::LEN);
-            uassert!(r_idx < RedexTy::LEN);
+            uassert!(l_idx < PtrTag::LEN);
+            uassert!(r_idx < PtrTag::LEN);
             LUT[l_idx][r_idx]
         });
         (redexes, ty)
@@ -513,14 +513,19 @@ impl Net {
         let idxs = left.cast::<usize>()
             & Simd::splat(PtrTag::BITS) * Simd::splat(PtrTag::LEN) + right.cast::<usize>()
             & Simd::splat(PtrTag::BITS);
+
         let lut: &[RedexTy] = LUT.as_flattened();
         let lut: &[u8] = unsafe { core::mem::transmute(lut) };
+        for idx in idxs.to_array() {
+            uassert!(idx < PtrTag::LEN * PtrTag::LEN);
+        }
         // Safety: by construction the lut is large enough for all tag values.
         // TODO check if gather_select_unchecked is faster than gather_or
         let ty =
             unsafe { Simd::gather_select_unchecked(lut, Mask::splat(true), idxs, Simd::splat(0)) };
         let ty = ty.to_array();
         let ty: [RedexTy; N] = unsafe { core::mem::transmute_copy(&ty) };
+
         (redexes, ty)
     }
     /// `ptr_to_fst` should point to `fst` with stage 1.
