@@ -49,6 +49,14 @@ use std::simd::{
 };
 use unsafe_vec::UnsafeVec;
 
+fn collect_array<T, const N: usize>(mut it: impl Iterator<Item = T>) -> [T; N] {
+    array::from_fn(|_| {
+        let item = it.next();
+        uassert!(item.is_some());
+        item.unwrap()
+    })
+}
+
 #[bilge::bitsize(3)]
 #[derive(
     Debug,
@@ -380,7 +388,7 @@ impl Net {
         // TODO try: SIMD by compare <= RedexTy::LEN/2, then repeat 2 more times to get 4 separate array each containing 1 or 2 of each type.
         // Then use SIMD compact technique to fit the 2 types to compact on ends of array.
         // Finally, reserve N on all redex types, push whole array with SIMD, and set_len (mask_bits_popcnt) to remove garbage on the end.
-        Self::add_redex_finish_masked(redexes, to_add, core::array::from_fn(|_| true));
+        Self::add_redex_finish_masked(redexes, to_add, array::from_fn(|_| true));
     }
     #[inline]
     pub fn add_redex_finish_masked<const N: usize>(
@@ -464,14 +472,14 @@ impl Net {
             out[RightAux1 as usize][RightAux1 as usize] = FolR1;
             out
         };
-        let redexes = core::array::from_fn(|i| {
+        let redexes = array::from_fn(|i| {
             if !right[i].tag().is_aux() {
                 Redex(right[i], left[i])
             } else {
                 Redex(left[i], right[i])
             }
         });
-        let ty = core::array::from_fn(|i| {
+        let ty = array::from_fn(|i| {
             let l_idx = left[i].tag() as usize;
             let r_idx = right[i].tag() as usize;
             uassert!(l_idx < PtrTag::LEN);
@@ -554,7 +562,7 @@ impl Net {
                 core::mem::swap(l, r)
             };
         }
-        let redexes = core::array::from_fn(|i| Redex(left[i], right[i]));
+        let redexes = array::from_fn(|i| Redex(left[i], right[i]));
 
         // Safety: Ptr is repr(transparent) of u32.
         let left: [u32; N] = unsafe { core::mem::transmute_copy(&left) };
@@ -700,34 +708,31 @@ impl Net {
     {
         // TODO this is the same code as in `interact_comm`
         // if target isn't a redirect
-        let target_ptrs: [_; N] = core::array::from_fn(|i| {
-            let right = right[i];
-            uassert!(!matches!(
-                right.tag(),
-                PtrTag::Con | PtrTag::Dup | PtrTag::Era
-            ));
-
-            let target = match right.tag().aux_side() {
-                LeftRight::Left => &mut self.nodes[right.slot_usize()].left,
-                LeftRight::Right => &mut self.nodes[right.slot_usize()].right,
-            };
-            // Safety: Dereferencing the result is valid until `self` is accessed by mut again.
-            target as *mut _
-        });
-        let target = core::array::from_fn(|i| unsafe { *target_ptrs[i] });
-        let mut count = 0u8;
-        let mask_not_redirect: [bool; N] = core::array::from_fn(|i| {
-            count += 1;
-            unsafe { *target_ptrs[i] == Ptr::IN() }
-        });
-        for ((mask, target), left) in core::iter::zip(mask_not_redirect, target_ptrs).zip(&left) {
+        let right_nodes: [&mut Node; N] = self
+            .nodes
+            .get_disjoint_mut(array::from_fn(|i| right[i].slot_usize()));
+        let target_ref: [&mut Ptr; N] = collect_array(core::iter::zip(right_nodes, right).map(
+            |(right_node, right)| {
+                uassert!(!matches!(
+                    right.tag(),
+                    PtrTag::Con | PtrTag::Dup | PtrTag::Era
+                ));
+                match right.tag().aux_side() {
+                    LeftRight::Left => &mut right_node.left,
+                    LeftRight::Right => &mut right_node.right,
+                }
+            },
+        ));
+        let target = array::from_fn(|i| *target_ref[i]);
+        let mask_not_redirect: [bool; N] = array::from_fn(|i| *target_ref[i] == Ptr::IN());
+        for ((mask, target), left) in core::iter::zip(mask_not_redirect, target_ref).zip(&left) {
             if mask {
-                unsafe { *target = *left }
+                *target = *left
             }
         }
         // TODO look at how often certain outputs come from to_add. e.g. I've noticed that Follows often beget follows. That might be a fast-path.
         let to_add = Self::new_redex_lut_batch_manual(left, target);
-        let mask_to_redirect = core::array::from_fn(|i| !mask_not_redirect[i]);
+        let mask_to_redirect = array::from_fn(|i| !mask_not_redirect[i]);
         // otherwise it's a redirect which must be followed again.
         Self::add_redex_finish_masked(&mut self.redex, to_add, mask_to_redirect);
         // TODO free original target port location
