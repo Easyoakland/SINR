@@ -480,8 +480,8 @@ impl Net {
     }
     #[inline]
     pub fn new_redex_lut_batch_manual<const N: usize>(
-        mut left: [Ptr; N],
-        mut right: [Ptr; N],
+        left: [Ptr; N],
+        right: [Ptr; N],
     ) -> ([Redex; N], [RedexTy; N])
     where
         LaneCount<N>: SupportedLaneCount,
@@ -547,18 +547,28 @@ impl Net {
             out[RightAux1 as usize][RightAux1 as usize] = FolR1;
             out
         };
-        for (l, r) in core::iter::zip(&mut left, &mut right) {
-            if !r.tag().is_aux() {
-                core::mem::swap(l, r)
-            };
-        }
-        let redexes = array::from_fn(|i| Redex(left[i], right[i]));
+        let swap_mask = array::from_fn(|i| right[i].tag().is_aux()); // false if should swap
 
         // Safety: Ptr is repr(transparent) of u32.
         let left: [u32; N] = unsafe { core::mem::transmute_copy(&left) };
         let right: [u32; N] = unsafe { core::mem::transmute_copy(&right) };
         let left = Simd::from_array(left);
         let right = Simd::from_array(right);
+
+        // Swap left and right where swap_mask is false.
+        let new_left =
+            std::simd::Simd::load_select(&left.to_array(), Mask::from_array(swap_mask), right);
+        let new_right =
+            std::simd::Simd::load_select(&right.to_array(), Mask::from_array(swap_mask), left);
+        let (left, right) = (new_left, new_right);
+
+        let redexes = {
+            // Safety: Ptr is repr(transparent) of u32
+            let left: [Ptr; N] = unsafe { core::mem::transmute_copy(&left.to_array()) };
+            let right: [Ptr; N] = unsafe { core::mem::transmute_copy(&right.to_array()) };
+            array::from_fn(|i| Redex(left[i], right[i]))
+        };
+
         let idxs = ((left.cast::<usize>() & Simd::splat((1 << PtrTag::BITS) - 1))
             * Simd::splat(PtrTag::LEN))
             + (right.cast::<usize>() & Simd::splat((1 << PtrTag::BITS) - 1));
@@ -569,7 +579,6 @@ impl Net {
             uassert!(idx < PtrTag::LEN * PtrTag::LEN);
         }
         // Safety: by construction the lut is large enough for all tag values.
-        // TODO check if gather_select_unchecked is faster than gather_or
         let ty =
             unsafe { Simd::gather_select_unchecked(lut, Mask::splat(true), idxs, Simd::splat(0)) };
         let ty = ty.to_array();
@@ -697,7 +706,6 @@ impl Net {
         LaneCount<N>: SupportedLaneCount,
     {
         // TODO this is the same code as in `interact_comm`
-        // if target isn't a redirect
         let right_nodes: [&mut Node; N] = self
             .nodes
             .get_disjoint_mut(array::from_fn(|i| right[i].slot_usize()));
