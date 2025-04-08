@@ -142,15 +142,21 @@ impl PtrTag {
             _ => uunreachable!(),
         }
     }
-    // TODO perf: use `if val & 1 != 0 {Right} else {Left}` or `LeftRight::from(val & 1 as bool)`
-    // # Safety
-    // Assumes this is an aux
+    /// # Safety
+    /// Assumes this is an aux
     pub fn aux_side(&self) -> LeftRight {
-        match self {
-            PtrTag::LeftAux0 | PtrTag::LeftAux1 => LeftRight::Left,
-            PtrTag::RightAux0 | PtrTag::RightAux1 => LeftRight::Right,
-            _ => uunreachable!(),
-        }
+        // match self {
+        //     PtrTag::LeftAux0 | PtrTag::LeftAux1 => LeftRight::Left,
+        //     PtrTag::RightAux0 | PtrTag::RightAux1 => LeftRight::Right,
+        //     _ => uunreachable!(),
+        // }
+        // perf: `match` doesn't optimize as well as manual bitfiddling
+        uassert!((*self as u8) < 4);
+        uassert!(LeftRight::from(u1::new(PtrTag::LeftAux0 as u8 & 1)) == LeftRight::Left);
+        uassert!(LeftRight::from(u1::new(PtrTag::LeftAux1 as u8 & 1)) == LeftRight::Left);
+        uassert!(LeftRight::from(u1::new(PtrTag::RightAux0 as u8 & 1)) == LeftRight::Right);
+        uassert!(LeftRight::from(u1::new(PtrTag::RightAux1 as u8 & 1)) == LeftRight::Right);
+        LeftRight::from(u1::new((*self as u8) & 1))
     }
 }
 
@@ -205,6 +211,7 @@ impl Ptr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+#[repr(C)]
 struct Node {
     left: Ptr,
     right: Ptr,
@@ -231,6 +238,7 @@ impl Redex {
 /// - Follow l1: ?? <> LeftAux1
 /// - Follow r0: ?? <> RightAux0
 /// - Follow r1: ?? <> RightAux1
+///
 /// Note to avoid races only one of these redex queues can be operated on simultaneously.
 /// On the positive side, the queue being operated on can do so without any atomics whatsoever (including the follow wires rules).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -334,25 +342,7 @@ impl Net {
     }
     #[inline]
     pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
-        // TODO: find a non-branching algorithm for this. Probably going to be a LUT.
-        uassert!(left.tag() != PtrTag::_Unused);
-        uassert!(right.tag() != PtrTag::_Unused);
-        uassert!(left != Ptr::EMP());
-        uassert!(right != Ptr::EMP());
-        uassert!(left != Ptr::IN());
-        uassert!(right != Ptr::IN());
-        let (redex, redex_ty) = match (left.tag(), right.tag()) {
-            (_, PtrTag::LeftAux0) => (Redex::new(left, right), RedexTy::FolL0),
-            (_, PtrTag::LeftAux1) => (Redex::new(left, right), RedexTy::FolL1),
-            (_, PtrTag::RightAux0) => (Redex::new(left, right), RedexTy::FolR0),
-            (_, PtrTag::RightAux1) => (Redex::new(left, right), RedexTy::FolR1),
-            (PtrTag::LeftAux0, _) => (Redex::new(right, left), RedexTy::FolL0),
-            (PtrTag::LeftAux1, _) => (Redex::new(right, left), RedexTy::FolL1),
-            (PtrTag::RightAux0, _) => (Redex::new(right, left), RedexTy::FolR0),
-            (PtrTag::RightAux1, _) => (Redex::new(right, left), RedexTy::FolR1),
-            (x, y) if x == y => (Redex::new(left, right), RedexTy::Ann),
-            (_, _) => (Redex::new(left, right), RedexTy::Com),
-        };
+        let (redex, redex_ty) = Self::new_redex(left, right);
         redexes[redex_ty as usize].push(redex);
     }
     #[inline]
@@ -717,6 +707,7 @@ impl Net {
                     right.tag(),
                     PtrTag::Con | PtrTag::Dup | PtrTag::Era
                 ));
+                // perf: match generates same asm as manually offseting by `aux_side` return value.
                 match right.tag().aux_side() {
                     LeftRight::Left => &mut right_node.left,
                     LeftRight::Right => &mut right_node.right,
