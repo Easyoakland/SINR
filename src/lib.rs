@@ -528,6 +528,7 @@ impl Net {
             }
         }
     }
+
     pub fn interact_ann(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
         let l_idx = left_ptr.slot_usize();
         let r_idx = right_ptr.slot_usize();
@@ -547,6 +548,8 @@ impl Net {
         });
     }
 
+    // perf: I have no idea why but for some reason this function spends significant time on the prologue and epilogue and `inline(always)` (inline insufficient) noticeably improves performance.
+    #[inline(always)]
     pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
         let (ll2, lr2, rl2, rr2) = self.alloc_node4();
 
@@ -895,6 +898,7 @@ mod tests {
             .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
     }
 
+    #[allow(unused_macros)]
     macro_rules! simd_follow {
         ($net:expr, $i:expr, $ty:ident, $n:literal) => {{
             let net = &mut $net;
