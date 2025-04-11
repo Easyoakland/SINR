@@ -35,7 +35,7 @@ Total time: 139.5743ms for 32222221 interactions
 MIPS: 230
 ```
 
-COMMIT: XXX
+COMMIT: 697ca99e978daa0d05d9ddcd08673464487c6d7f
 Device 2 with page fault warmup, while let, speed_test of infinite net single-threaded, SIMD64 L0 and R0 follows, no memory re-use
 all interactions:
 Average redexes 665
