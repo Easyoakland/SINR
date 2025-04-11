@@ -244,17 +244,24 @@ impl Redex {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 enum RedexTy {
+    // Note Fol* variants have same discriminant as corresponding `PtrTag` variant
     #[default]
+    FolL0 = 0,
+    FolR0 = 1,
+    FolL1 = 2,
+    FolR1 = 3,
     Ann,
     Com,
-    FolL0,
-    FolL1,
-    FolR0,
-    FolR1,
 }
 impl RedexTy {
     pub const LEN: usize = 6;
     pub const ZERO: Self = RedexTy::Ann;
+    /// # Safety
+    /// `val` < RedexTy::LEN
+    pub unsafe fn from_u8(val: u8) -> Self {
+        uassert!({ val as usize } < Self::LEN);
+        unsafe { core::mem::transmute(val) }
+    }
 }
 
 type Redexes = [UnsafeVec<Redex>; RedexTy::LEN];
@@ -354,17 +361,23 @@ impl Net {
         uassert!(right != Ptr::EMP());
         uassert!(left != Ptr::IN());
         uassert!(right != Ptr::IN());
-        let (redex, redex_ty) = match (left.tag(), right.tag()) {
-            (_, PtrTag::LeftAux0) => (Redex::new(left, right), RedexTy::FolL0),
-            (_, PtrTag::LeftAux1) => (Redex::new(left, right), RedexTy::FolL1),
-            (_, PtrTag::RightAux0) => (Redex::new(left, right), RedexTy::FolR0),
-            (_, PtrTag::RightAux1) => (Redex::new(left, right), RedexTy::FolR1),
-            (PtrTag::LeftAux0, _) => (Redex::new(right, left), RedexTy::FolL0),
-            (PtrTag::LeftAux1, _) => (Redex::new(right, left), RedexTy::FolL1),
-            (PtrTag::RightAux0, _) => (Redex::new(right, left), RedexTy::FolR0),
-            (PtrTag::RightAux1, _) => (Redex::new(right, left), RedexTy::FolR1),
-            (x, y) if x == y => (Redex::new(right, left), RedexTy::Ann),
-            (_, _) => (Redex::new(right, left), RedexTy::Com),
+        let lt = left.tag();
+        let rt = right.tag();
+        let (redex, redex_ty) = match () {
+            // If right is a follow.
+
+            // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
+            _ if (rt as u8) < 4 => (Redex::new(left, right), unsafe {
+                RedexTy::from_u8(rt as u8)
+            }),
+            // If left is a follow.
+
+            // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
+            _ if (lt as u8) < 4 => (Redex::new(right, left), unsafe {
+                RedexTy::from_u8(lt as u8)
+            }),
+            _ if lt == rt => (Redex::new(left, right), RedexTy::Ann),
+            _ => (Redex::new(left, right), RedexTy::Com),
         };
         (redex, redex_ty)
     }
