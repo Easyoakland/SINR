@@ -373,7 +373,7 @@ impl Net {
     where
         LaneCount<N>: SupportedLaneCount,
     {
-        let to_add @ (_redex, _redex_ty) = Net::new_redex_lut_batch_manual(left, right);
+        let to_add @ (_redex, _redex_ty) = Net::new_redex_lut_batch(left, right);
         // TODO unsafe reserve function for feature = "prealloc"
         // TODO try: SIMD by compare <= RedexTy::LEN/2, then repeat 2 more times to get 4 separate array each containing 1 or 2 of each type.
         // Then use SIMD compact technique to fit the 2 types to compact on ends of array.
@@ -398,88 +398,6 @@ impl Net {
     }
     #[inline]
     pub fn new_redex_lut_batch<const N: usize>(
-        left: [Ptr; N],
-        right: [Ptr; N],
-    ) -> ([Redex; N], [RedexTy; N]) {
-        const LUT: [[RedexTy; PtrTag::LEN]; PtrTag::LEN] = {
-            let mut out = [[RedexTy::ZERO; PtrTag::LEN]; PtrTag::LEN];
-            use PtrTag::*;
-            use RedexTy::*;
-            out[Con as usize][Con as usize] = Ann;
-            out[Con as usize][Dup as usize] = Com;
-            out[Con as usize][Era as usize] = Com;
-            out[Con as usize][LeftAux0 as usize] = FolL0;
-            out[Con as usize][LeftAux1 as usize] = FolL1;
-            out[Con as usize][RightAux0 as usize] = FolR0;
-            out[Con as usize][RightAux1 as usize] = FolR1;
-
-            out[Dup as usize][Con as usize] = Com;
-            out[Dup as usize][Dup as usize] = Ann;
-            out[Dup as usize][Era as usize] = Com;
-            out[Dup as usize][LeftAux0 as usize] = FolL0;
-            out[Dup as usize][LeftAux1 as usize] = FolL1;
-            out[Dup as usize][RightAux0 as usize] = FolR0;
-            out[Dup as usize][RightAux1 as usize] = FolR1;
-
-            out[Era as usize][Con as usize] = Com;
-            out[Era as usize][Dup as usize] = Com;
-            out[Era as usize][Era as usize] = Ann;
-            out[Era as usize][LeftAux0 as usize] = FolL0;
-            out[Era as usize][LeftAux1 as usize] = FolL1;
-            out[Era as usize][RightAux0 as usize] = FolR0;
-            out[Era as usize][RightAux1 as usize] = FolR1;
-
-            out[LeftAux0 as usize][Con as usize] = RedexTy::ZERO;
-            out[LeftAux0 as usize][Dup as usize] = RedexTy::ZERO;
-            out[LeftAux0 as usize][Era as usize] = RedexTy::ZERO;
-            out[LeftAux0 as usize][LeftAux0 as usize] = FolL0;
-            out[LeftAux0 as usize][LeftAux1 as usize] = FolL1;
-            out[LeftAux0 as usize][RightAux0 as usize] = FolR0;
-            out[LeftAux0 as usize][RightAux1 as usize] = FolR1;
-
-            out[LeftAux1 as usize][Con as usize] = RedexTy::ZERO;
-            out[LeftAux1 as usize][Dup as usize] = RedexTy::ZERO;
-            out[LeftAux1 as usize][Era as usize] = RedexTy::ZERO;
-            out[LeftAux1 as usize][LeftAux0 as usize] = FolL0;
-            out[LeftAux1 as usize][LeftAux1 as usize] = FolL1;
-            out[LeftAux1 as usize][RightAux0 as usize] = FolR0;
-            out[LeftAux1 as usize][RightAux1 as usize] = FolR1;
-
-            out[RightAux0 as usize][Con as usize] = RedexTy::ZERO;
-            out[RightAux0 as usize][Dup as usize] = RedexTy::ZERO;
-            out[RightAux0 as usize][Era as usize] = RedexTy::ZERO;
-            out[RightAux0 as usize][LeftAux0 as usize] = FolL0;
-            out[RightAux0 as usize][LeftAux1 as usize] = FolL1;
-            out[RightAux0 as usize][RightAux0 as usize] = FolR0;
-            out[RightAux0 as usize][RightAux1 as usize] = FolR1;
-
-            out[RightAux1 as usize][Con as usize] = RedexTy::ZERO;
-            out[RightAux1 as usize][Dup as usize] = RedexTy::ZERO;
-            out[RightAux1 as usize][Era as usize] = RedexTy::ZERO;
-            out[RightAux1 as usize][LeftAux0 as usize] = FolL0;
-            out[RightAux1 as usize][LeftAux1 as usize] = FolL1;
-            out[RightAux1 as usize][RightAux0 as usize] = FolR0;
-            out[RightAux1 as usize][RightAux1 as usize] = FolR1;
-            out
-        };
-        let redexes = array::from_fn(|i| {
-            if !right[i].tag().is_aux() {
-                Redex(right[i], left[i])
-            } else {
-                Redex(left[i], right[i])
-            }
-        });
-        let ty = array::from_fn(|i| {
-            let l_idx = left[i].tag() as usize;
-            let r_idx = right[i].tag() as usize;
-            uassert!(l_idx < PtrTag::LEN);
-            uassert!(r_idx < PtrTag::LEN);
-            LUT[l_idx][r_idx]
-        });
-        (redexes, ty)
-    }
-    #[inline]
-    pub fn new_redex_lut_batch_manual<const N: usize>(
         left: [Ptr; N],
         right: [Ptr; N],
     ) -> ([Redex; N], [RedexTy; N])
@@ -730,7 +648,7 @@ impl Net {
             }
         }
         // TODO look at how often certain outputs come from to_add. e.g. I've noticed that Follows often beget follows. That might be a fast-path.
-        let to_add = Self::new_redex_lut_batch_manual(left, target);
+        let to_add = Self::new_redex_lut_batch(left, target);
         let mask_to_redirect = array::from_fn(|i| !mask_not_redirect[i]);
         // otherwise it's a redirect which must be followed again.
         Self::add_redex_finish_masked(&mut self.redex, to_add, mask_to_redirect);
@@ -768,7 +686,7 @@ static ADD_REDEX_LUT_BATCH: fn(
 static ADD_REDEX_LUT_BATCH_MANUAL: fn(
     left_ptr: [Ptr; 64],
     right_ptr: [Ptr; 64],
-) -> ([Redex; 64], [RedexTy; 64]) = Net::new_redex_lut_batch_manual::<64>;
+) -> ([Redex; 64], [RedexTy; 64]) = Net::new_redex_lut_batch::<64>;
 #[used]
 static INTERACT_FOLLOW_BATCH: fn(&mut Net, left: [Ptr; 64], right: [Ptr; 64]) =
     Net::interact_follow_batch::<64>;
@@ -955,8 +873,7 @@ mod tests {
         trace!(file "24.dot",; viz::mem_to_dot(&net));
     }
 
-    fn infinite_reduction_net() -> Net {
-        let mut net = Net::default();
+    fn infinite_reduction_net(net: &mut Net) {
         let (n1, n2, e1, e2) = net.alloc_node4();
         net.nodes[n1.value() as usize] = Node {
             left: Ptr::new(PtrTag::Era, e1),
@@ -976,19 +893,18 @@ mod tests {
         };
         net.redex[RedexTy::Com as usize]
             .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
-        net
     }
 
     macro_rules! simd_follow {
-        ($net:expr, $i:expr, $ty:ident) => {
+        ($net:expr, $i:expr, $ty:ident, $n:literal) => {{
             let net = &mut $net;
-            if net.redex[RedexTy::$ty as usize].len() >= 64 {
+            while net.redex[RedexTy::$ty as usize].len() >= $n {
                 trace!(file "start.dot",;viz::mem_to_dot(&net));
                 // TODO split_at{_mut} for UnsafeVec
-                let v = &net.redex[RedexTy::$ty as usize];
-                // Sanity check: if v.len() == 64 prefix slice is [0..0) i.e. empty and suffix is [64-len..len) i.e. everything.
-                // Safety: Just checked the length >= 64
-                let (_prefix, suffix) = unsafe { v.0.split_at_unchecked(v.len() - 64) };
+                let v = &mut net.redex[RedexTy::$ty as usize];
+                // Sanity check: if v.len() == $n prefix slice is [0..0) i.e. empty and suffix is [$n-len..len) i.e. everything.
+                // Safety: Just checked the length >=$n
+                let (_prefix, suffix) = unsafe { v.0.split_at_unchecked(v.len() - $n) };
                 let left = core::array::from_fn(|i| {
                     uassert!(suffix.len() > i);
                     suffix[i].0
@@ -997,77 +913,89 @@ mod tests {
                     uassert!(suffix.len() > i);
                     suffix[i].1
                 });
-                net.interact_follow_batch::<64>(left, right);
-                let v = &mut net.redex[RedexTy::$ty as usize].0;
                 unsafe {
-                    v.set_len(v.len() - 64);
+                    v.0.set_len(v.len() - $n);
                 }
+                net.interact_follow_batch::<$n>(left, right);
 
-                $i += 64;
-            }
+                $i += $n;
+            }}
         };
     }
     #[test]
     fn speed_test() {
-        let mut net = infinite_reduction_net();
+        let mut net = Net::default();
+
+        // Force page faults now so they don't happen while benchmarking.
+        for _ in 0..1000000000 {
+            net.nodes.push(Node::default());
+        }
+        for _ in 0..1000000000 {
+            net.nodes.pop();
+        }
+        for redex in &mut net.redex {
+            for _ in 0..1000000 {
+                redex.push(Redex::default());
+            }
+            for _ in 0..1000000 {
+                redex.pop();
+            }
+        }
+        eprintln!("page fault warmup finished");
+
+        for _ in 0..111 {
+            infinite_reduction_net(&mut net);
+        }
         let mut i = 0;
         let mut redexes_avg = 0usize;
         let mut redexes_max = 0usize;
+        let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
-        for _ in 0..10000000 {
+        const ITERS: usize = 400000;
+        for _ in 0..ITERS {
+            nodes_max = nodes_max.max(net.nodes.len());
             redexes_avg += net.redex.iter().flat_map(|x| &x.0).count();
             redexes_max = redexes_max.max(net.redex.iter().flat_map(|x| &x.0).count());
             // eprintln!(
-            //     "{:?}",
+            //     "{:0>2?}",
             //     net.redex.iter().map(|x| x.len()).collect::<Vec<_>>()
             // );
-            let mut cont = false;
-            if let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
                 net.interact_ann(l, r);
                 i += 1;
-                cont = true;
             }
-            if let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
                 net.interact_com(l, r);
                 i += 1;
-                cont = true;
             }
-            simd_follow!(net, i, FolL0);
-            simd_follow!(net, i, FolR0);
-            if cont {
-                continue;
-            }
-            // if net.redex[RedexTy::Ann as usize..RedexTy::Com as usize]
-            //     .iter()
-            //     .map(|x| x.len())
-            //     .max()
-            //     .unwrap()
-            //     > 0
-            // {
-            //     continue;
-            // }
-            if let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
+            // simd_follow!(net, i, FolL0, 32);
+            while let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
+            // simd_follow!(net, i, FolR0, 32);
+            while let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(Redex(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            if let Some(Redex(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
         }
         let end = std::time::Instant::now();
-        eprintln!("Average redexes {}", redexes_avg / 10000000);
+        eprintln!("Average redexes {}", redexes_avg / ITERS);
         eprintln!("Max redexes {}", redexes_max);
+        eprintln!("Nodes max {}", nodes_max);
         eprintln!("Total time: {:?} for {i} interactions", end - start);
-        eprintln!("MIPS: {}", i / (end.duration_since(start)).as_micros());
+        eprintln!(
+            "MIPS: {}",
+            i as f32 / (end.duration_since(start)).as_micros() as f32
+        );
     }
 
     #[test]
@@ -1085,11 +1013,11 @@ mod tests {
                 let scalar_res = Net::new_redex(left, right);
                 scalar_res_v.push(scalar_res);
                 let scalar_res = ([scalar_res.0], [scalar_res.1]);
-                let vector_res = Net::new_redex_lut_batch_manual::<1>([left], [right]);
+                let vector_res = Net::new_redex_lut_batch::<1>([left], [right]);
                 assert_eq!(scalar_res, vector_res);
             }
         }
-        let vector_res = Net::new_redex_lut_batch_manual::<49>(
+        let vector_res = Net::new_redex_lut_batch::<49>(
             core::array::from_fn(|i| all_left[i]),
             core::array::from_fn(|i| all_right[i]),
         );
