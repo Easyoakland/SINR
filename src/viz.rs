@@ -107,61 +107,6 @@ fn mem_to_graph(net: &Net) -> VizGraph {
         w.push_str(&format!("{}", to.tag()));
     }
 
-    /*     type EdgeLabel = i64;
-    // node_idx, port
-    type NodeIdx = Vec<(usize, u8)>;
-    let mut map = HashMap::<EdgeLabel, NodeIdx>::new();
-    let mut graph = petgraph::Graph::default();
-
-    for (i, node) in mem.iter().filter(|x| x[0] != EMPTY).enumerate() {
-        let node_label = match node[0] {
-            crate::inet::REDIRECT => 'R',
-            crate::inet::ERAS => 'ε',
-            crate::inet::LAM => 'λ', // ζ
-            crate::inet::APP => '@', // 'ζ',
-            crate::inet::DUP => 'δ',
-            i => panic!("invalid tag in graph: {i}"),
-        };
-        graph.add_node(format!("{node_label}{i}"));
-        for (port_num, edge_label) in (if node[0] == crate::inet::REDIRECT {
-            &node[1..3]
-        } else {
-            &node[1..]
-        })
-        .into_iter()
-        .enumerate()
-        {
-            let port_num: Port = port_num.try_into().unwrap();
-            match map.entry(edge_label.abs()) {
-                std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                    occupied_entry.get_mut().push((i, port_num));
-                    if occupied_entry.get().iter().len() > 2 {
-                        println!("malformed mem: {edge_label} has >2 connected nodes")
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                    vacant_entry.insert(vec![(i, port_num)]);
-                }
-            }
-        }
-    }
-
-    // Add edges
-    for nodes in map.values() {
-        for node_i in nodes.iter() {
-            for node_j in nodes.iter() {
-                if node_i >= node_j {
-                    // don't duplicate edges between nodes
-                    continue;
-                }
-                graph.add_edge(
-                    node_i.0.into(),
-                    node_j.0.into(),
-                    format!("{}-{}", node_i.1, node_j.1),
-                );
-            }
-        }
-    } */
     for node in empty {
         graph.remove_node(u32::try_from(node).unwrap().into());
     }
