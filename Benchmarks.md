@@ -172,7 +172,7 @@ Nodes max 532798225
 Total time: 2.0261774s for 266398890 interactions
 MIPS: 131.47859
 
-Commit: XXX
+Commit: 708304d5834521f76f732bb172673964cdce6efb
 Device 2 with page fault warmup, while let, speed_test of infinite net single-threaded, scalar L0 and R0 follows, no memory re-use, lto = "fat", codegen-units=1, inline(always) interact_com
 all interactions:
 Max redexes 666
