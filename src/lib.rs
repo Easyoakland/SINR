@@ -133,14 +133,15 @@ impl PtrTag {
 #[repr(transparent)]
 struct Ptr {
     tag: PtrTag,
+    // This could be bigger. Chose smaller number to give best opportunity for performance to not suffer.
+    // This means we can address 2^29 nodes or 2^32 bytes since each node is u64 in size.
+    // If `Ptr` was a u64 then 2^61 nodes or 2^67 bytes since each node is u128 in size, or make PtrTag 6 bits to get 2^64 bytes.
     slot: u29,
 }
 
 impl Default for Ptr {
     fn default() -> Self {
-        Self {
-            value: Default::default(),
-        }
+        Self::EMP()
     }
 }
 impl Ptr {
@@ -189,14 +190,14 @@ impl Redex {
     }
 }
 
-/// - Commute: Combinator i <> Combinator j (different label)
-/// - Annihilate: Combinator i <> Combinator i (same label)
 /// - Follow l0: ?? <> LeftAux0
-/// - Follow l1: ?? <> LeftAux1
 /// - Follow r0: ?? <> RightAux0
+/// - Follow l1: ?? <> LeftAux1
 /// - Follow r1: ?? <> RightAux1
+/// - Annihilate: Combinator i <> Combinator i (same label)
+/// - Commute: Combinator i <> Combinator j (different label)
 ///
-/// Note to avoid races only one of these redex queues can be operated on simultaneously.
+/// Note to avoid races only one of the `Fol` queues or any of principal redex queue can be operated on simultaneously.
 /// On the positive side, the queue being operated on can do so without any atomics whatsoever (including the follow wires rules).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
