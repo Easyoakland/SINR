@@ -1,10 +1,11 @@
 use bilge::prelude::*;
 #[bilge::bitsize(1)]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, bilge::BinaryBits, bilge::FromBits, Hash)]
+#[repr(u8)]
 pub enum LeftRight {
     #[default]
-    Left,
-    Right,
+    Left = 0,
+    Right = 1,
 }
 impl LeftRight {
     pub fn is_left(self) -> bool {
