@@ -99,43 +99,6 @@ impl PtrTag {
     pub const fn is_aux(self) -> bool {
         self as u8 <= Self::RightAux1 as u8
     }
-    /// If currently stage 0 makes stage 1, and vice versa
-    // TODO perf: use `val ^ 0b10` since this doesn't optimize out branches on its own.
-    // # Safety
-    // Assumes this is an aux.
-    pub fn aux_swap_stage(self) -> Self {
-        match self {
-            PtrTag::LeftAux0 => PtrTag::LeftAux1,
-            PtrTag::LeftAux1 => PtrTag::LeftAux0,
-            PtrTag::RightAux0 => PtrTag::RightAux1,
-            PtrTag::RightAux1 => PtrTag::RightAux0,
-            _ => uunreachable!(),
-        }
-    }
-    // left -> right and right -> left
-    // TODO perf: use `val ^ 0b01` since this doesn't optimize out branches on its own.
-    // # Safety
-    // Assumes this is an aux.
-    pub fn aux_swap_side(self) -> Self {
-        match self {
-            PtrTag::LeftAux0 => PtrTag::RightAux0,
-            PtrTag::LeftAux1 => PtrTag::RightAux1,
-            PtrTag::RightAux0 => PtrTag::LeftAux0,
-            PtrTag::RightAux1 => PtrTag::LeftAux1,
-            _ => uunreachable!(),
-        }
-    }
-    /// Keep side, set stage to 1
-    // TODO perf: use `val & 0b10`
-    // # Safety
-    // Assumes this is an aux
-    pub fn set_s1(self) -> Self {
-        match self {
-            PtrTag::LeftAux0 | PtrTag::LeftAux1 => PtrTag::LeftAux1,
-            PtrTag::RightAux0 | PtrTag::RightAux1 => PtrTag::RightAux1,
-            _ => uunreachable!(),
-        }
-    }
     /// # Safety
     /// Assumes this is an aux
     pub fn aux_side(&self) -> LeftRight {
@@ -298,26 +261,13 @@ impl Net {
         self.nodes[0].left = root
     }
     /// Read the target of this pointer.
+    // Not used by the runtime, so this doesn't need to be performant.
     pub fn read(&self, ptr: Ptr) -> Either<Node, Ptr> {
         match ptr.tag() {
             PtrTag::LeftAux0 | PtrTag::LeftAux1 => Either::B(self.nodes[ptr.slot_usize()].left),
             PtrTag::RightAux0 | PtrTag::RightAux1 => Either::B(self.nodes[ptr.slot_usize()].right),
             PtrTag::Era | PtrTag::Con | PtrTag::Dup => Either::A(self.nodes[ptr.slot_usize()]),
             PtrTag::_Unused => uunreachable!(),
-        }
-    }
-    // The other aux of a `Node`
-    pub fn other_aux(&self, ptr: Ptr) -> Ptr {
-        let node = self.nodes[ptr.slot_usize()];
-        uassert!(matches!(
-            ptr.tag(),
-            PtrTag::RightAux0 | PtrTag::RightAux1 | PtrTag::LeftAux0 | PtrTag::LeftAux1
-        ));
-        // TODO xor instead of branch.
-        if matches!(ptr.tag(), PtrTag::RightAux0 | PtrTag::RightAux1) {
-            node.left
-        } else {
-            node.right
         }
     }
     pub fn free_node(&mut self, idx: Ptr) {
@@ -348,7 +298,6 @@ impl Net {
     }
     #[inline]
     pub fn new_redex(left: Ptr, right: Ptr) -> (Redex, RedexTy) {
-        // TODO: find a non-branching algorithm for this. Probably going to be a LUT.
         uassert!(left.tag() != PtrTag::_Unused);
         uassert!(right.tag() != PtrTag::_Unused);
         uassert!(left != Ptr::EMP());
@@ -359,13 +308,11 @@ impl Net {
         let rt = right.tag();
         let (redex, redex_ty) = match () {
             // If right is a follow.
-
             // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
             _ if (rt as u8) < 4 => (Redex::new(left, right), unsafe {
                 RedexTy::from_u8(rt as u8)
             }),
             // If left is a follow.
-
             // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
             _ if (lt as u8) < 4 => (Redex::new(right, left), unsafe {
                 RedexTy::from_u8(lt as u8)
@@ -380,9 +327,8 @@ impl Net {
     pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
         uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
         // All cases either swap (heterogenous cases) or or don't care that they swap (homogenous cases).
-        // TODO perf: see if this is an anti-optimization and it is better to check the below and dispatch with 3 masks.
+        // TODO perf: see if this is an anti-optimization.
         core::mem::swap(fst, snd);
-        // TODO how to remove this branching? Is it worthwhile to do all of them masked?
         match (*fst == Ptr::IN(), *snd == Ptr::IN()) {
             (true, true) => {
                 // This is the only reason there needs to be two stages for left and right instead of only 1 per left and right.
@@ -441,7 +387,6 @@ impl Net {
             (rl, Ptr::new(lt, rl2)),
             (rr, Ptr::new(lt, rr2)),
         ] {
-            // TODO remove branch or use a mask. Running `*a=b` masked should be very low-cost.
             if *a == Ptr::IN() {
                 *a = b // redirect to the new principal port
             } else {
@@ -452,7 +397,6 @@ impl Net {
 
         // Make new nodes and link their aux together so each has 1 out and 1 in.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
-        // TODO does this prevent SIMD? What if uassert all the indices are non-equal?
         self.nodes[ll2.value() as usize] = Node {
             left: Ptr::new(PtrTag::LeftAux0, rl2),
             right: Ptr::IN(),
