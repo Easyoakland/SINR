@@ -1,4 +1,4 @@
-use crate::{left_right::LeftRight, Net, Ptr, PtrTag, Redex};
+use crate::{left_right::LeftRight, Net, Ptr, Redex};
 use bilge::prelude::u29;
 use petgraph::{dot::Dot, Directed};
 use std::collections::HashSet;
