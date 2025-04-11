@@ -947,14 +947,12 @@ mod tests {
             infinite_reduction_net(&mut net);
         }
         let mut i = 0;
-        let mut redexes_avg = 0usize;
         let mut redexes_max = 0usize;
         let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
         const ITERS: usize = 400000;
         for _ in 0..ITERS {
             nodes_max = nodes_max.max(net.nodes.len());
-            redexes_avg += net.redex.iter().flat_map(|x| &x.0).count();
             redexes_max = redexes_max.max(net.redex.iter().flat_map(|x| &x.0).count());
             // eprintln!(
             //     "{:0>2?}",
@@ -988,7 +986,6 @@ mod tests {
             }
         }
         let end = std::time::Instant::now();
-        eprintln!("Average redexes {}", redexes_avg / ITERS);
         eprintln!("Max redexes {}", redexes_max);
         eprintln!("Nodes max {}", nodes_max);
         eprintln!("Total time: {:?} for {i} interactions", end - start);

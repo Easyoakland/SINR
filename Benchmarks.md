@@ -142,7 +142,7 @@ Nodes max 532798225
 Total time: 2.299392s for 266398890 interactions
 MIPS: 115.85623
 
-Device 2 with page fault warmup, while let, speed_test of infinite net single-threaded,scalar L0 and R0 follows, no memory re-use
+Device 2 with page fault warmup, while let, speed_test of infinite net single-threaded, scalar L0 and R0 follows, no memory re-use
 all interactions:
 Average redexes 665
 Max redexes 666
@@ -156,3 +156,19 @@ Max redexes 666
 Nodes max 532798225
 Total time: 2.1299137s for 266398890 interactions
 MIPS: 125.07501
+
+Device 2 with page fault warmup, while let, speed_test of infinite net single-threaded, scalar L0 and R0 follows, no memory re-use, lto = "fat", codegen-units=1
+all interactions:
+Average redexes 665
+Max redexes 666
+Nodes max 532798225
+Total time: 2.0610257s for 621598335 interactions
+MIPS: 301.5967
+
+non-follow interactions:
+Average redexes 665
+Max redexes 666
+Nodes max 532798225
+Total time: 2.0261774s for 266398890 interactions
+MIPS: 131.47859
+
