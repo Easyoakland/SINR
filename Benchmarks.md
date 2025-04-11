@@ -1,3 +1,5 @@
+Benchmarks all use `--features unsafe,prealloc` and `-C target-cpu=native` unless otherwise specified.
+
 Device 1: AMD Ryzen 5 7640U
 Device 2: Intel Core i9-10900K
 
