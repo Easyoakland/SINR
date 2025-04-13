@@ -369,6 +369,19 @@ impl Net {
         });
     }
 
+    /// Follow target which is an auxiliary.
+    /// Either it redirects to another port or it is a [`Ptr::IN()`]
+    /// After following `source` is connected again.
+    #[inline]
+    pub fn follow_target(redexes: &mut Redexes, source: Ptr, target: &mut Ptr) {
+        if *target == Ptr::IN() {
+            *target = source // redirect to the new port
+        } else {
+            Self::add_redex(redexes, source, *target);
+            // TODO free port a's original location
+        }
+    }
+
     // perf: I have no idea why but for some reason this function spends significant time on the prologue and epilogue and `inline(always)` (inline insufficient) noticeably improves performance.
     #[inline(always)]
     pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
@@ -391,12 +404,7 @@ impl Net {
             (rl, Ptr::new(lt, rl2)),
             (rr, Ptr::new(lt, rr2)),
         ] {
-            if *a == Ptr::IN() {
-                *a = b // redirect to the new principal port
-            } else {
-                Self::add_redex(&mut self.redex, b, *a);
-                // TODO free port a's original location
-            }
+            Self::follow_target(&mut self.redex, b, a);
         }
 
         // Make new nodes and link their aux together so each has 1 out and 1 in.
@@ -430,15 +438,8 @@ impl Net {
             LeftRight::Left => &mut self.nodes[right.slot_usize()].left,
             LeftRight::Right => &mut self.nodes[right.slot_usize()].right,
         };
-        if *target == Ptr::IN() {
-            // TODO this is the same code as in `interact_comm`
-            // if target isn't a redirect
-            *target = left;
-        } else {
-            // otherwise it's a redirect which must be followed again.
-            Self::add_redex(&mut self.redex, left, *target);
-            // TODO free original target port location
-        }
+
+        Self::follow_target(&mut self.redex, left, target);
     }
 }
 
