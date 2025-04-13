@@ -227,10 +227,12 @@ impl RedexTy {
 
 type Redexes = [UnsafeVec<Redex>; RedexTy::LEN];
 type Nodes = UnsafeVec<Node>;
+type FreeList = UnsafeVec<Slot>;
 #[derive(Debug, Clone)]
 struct Net {
     nodes: Nodes,
     redex: Redexes,
+    free_list: FreeList,
 }
 impl Default for Net {
     fn default() -> Self {
@@ -240,6 +242,7 @@ impl Default for Net {
             // Can, however, use slot 0 to point towards something, e.g., the root of the net.
             nodes: UnsafeVec(vec![Node::EMP()]),
             redex: Default::default(),
+            free_list: UnsafeVec(Vec::new()),
         };
         #[cfg(feature = "prealloc")]
         {
@@ -247,6 +250,7 @@ impl Default for Net {
             for redex in &mut net.redex {
                 redex.0.reserve(1000000000)
             }
+            net.free_list.0.reserve(1000000000);
         }
         net
     }
@@ -277,6 +281,16 @@ impl Net {
     pub fn free_node(&mut self, idx: Ptr) {
         // TODO add to a stack of free slot addresses.
         self.nodes[idx.slot_usize()] = Node::EMP();
+    }
+    /// # Safety
+    /// Assumes `to_free` and `other` are both auxiliary ports of a single node.
+    pub fn free_port(free_list: &mut FreeList, to_free: &mut Ptr, other: Ptr, to_free_slot: Slot) {
+        // If the other port on this node is also empty then add the whole node to the free list.
+        if other == Ptr::EMP() {
+            free_list.push(to_free_slot);
+        }
+        // Set the `to_free` port to empty
+        *to_free = Ptr::EMP();
     }
     #[inline]
     pub fn alloc_node(&mut self) -> Slot {
@@ -373,12 +387,19 @@ impl Net {
     /// Either it redirects to another port or it is a [`Ptr::IN()`]
     /// After following `source` is connected again.
     #[inline]
-    pub fn follow_target(redexes: &mut Redexes, source: Ptr, target: &mut Ptr) {
+    pub fn follow_target(
+        free_list: &mut FreeList,
+        redexes: &mut Redexes,
+        source: Ptr,
+        target: &mut Ptr,
+        target_other: Ptr,
+        target_slot: Slot,
+    ) {
         if *target == Ptr::IN() {
             *target = source // redirect to the new port
         } else {
             Self::add_redex(redexes, source, *target);
-            // TODO free port a's original location
+            Self::free_port(free_list, target, target_other, target_slot);
         }
     }
 
@@ -393,19 +414,17 @@ impl Net {
         let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
         let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
 
-        // Leave redirect from old nodes to new node's primary port for each of ll,lr,rl,rr that was Ptr::IN(). Rest are new redexes.
-        // `a` is the aux
-        // `b` is the new primary port of the new node
-        // ll and lr are now of type rt
-        // rl and rr are now of type lt
-        for (a, b) in [
-            (ll, Ptr::new(rt, ll2)),
-            (lr, Ptr::new(rt, lr2)),
-            (rl, Ptr::new(lt, rl2)),
-            (rr, Ptr::new(lt, rr2)),
-        ] {
-            Self::follow_target(&mut self.redex, b, a);
-        }
+        // ll2 and lr2 are now of type rt
+        // rl2 and rr2 are now of type lt
+        // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
+        #[rustfmt::skip]
+        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(rt, ll2), ll, *lr,left_ptr.slot());
+        #[rustfmt::skip]
+        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(rt, lr2), lr, *ll, left_ptr.slot());
+        #[rustfmt::skip]
+        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(lt, rl2), rl, *rr,right_ptr.slot());
+        #[rustfmt::skip]
+        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(lt, rr2), rr, *rl,right_ptr.slot());
 
         // Make new nodes and link their aux together so each has 1 out and 1 in.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
@@ -434,12 +453,20 @@ impl Net {
             PtrTag::Con | PtrTag::Dup | PtrTag::Era
         ));
 
-        let target = match right.tag().aux_side() {
-            LeftRight::Left => &mut self.nodes[right.slot_usize()].left,
-            LeftRight::Right => &mut self.nodes[right.slot_usize()].right,
+        let right_node = &mut self.nodes[right.slot_usize()];
+        let (target, target_other) = match right.tag().aux_side() {
+            LeftRight::Left => (&mut right_node.left, &mut right_node.right),
+            LeftRight::Right => (&mut right_node.right, &mut right_node.left),
         };
 
-        Self::follow_target(&mut self.redex, left, target);
+        Self::follow_target(
+            &mut self.free_list,
+            &mut self.redex,
+            left,
+            target,
+            *target_other,
+            right.slot(),
+        );
     }
 }
 
