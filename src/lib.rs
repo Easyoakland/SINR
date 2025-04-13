@@ -278,27 +278,15 @@ impl Net {
             PtrTag::_Unused => uunreachable!(),
         }
     }
-    pub fn free_node(&mut self, idx: Ptr) {
-        // TODO add to a stack of free slot addresses.
-        self.nodes[idx.slot_usize()] = Node::EMP();
-    }
-    /// # Safety
-    /// Assumes `to_free` and `other` are both auxiliary ports of a single node.
-    pub fn free_port(free_list: &mut FreeList, to_free: &mut Ptr, other: Ptr, to_free_slot: Slot) {
-        // If the other port on this node is also empty then add the whole node to the free list.
-        if other == Ptr::EMP() {
-            free_list.push(to_free_slot);
-        }
-        // Set the `to_free` port to empty
-        *to_free = Ptr::EMP();
-    }
     #[inline]
     pub fn alloc_node(&mut self) -> Slot {
-        let res = self.nodes.len();
-        self.nodes.push(Node::default());
-        uassert!(res <= u32::MAX as usize); // prevent check on feature=unsafe
-        uassert!(res <= <Slot as Bitsized>::MAX.value() as usize);
-        Slot::new(res.try_into().unwrap())
+        self.free_list.pop().unwrap_or_else(|| {
+            let res = self.nodes.len();
+            self.nodes.push(Node::default());
+            uassert!(res <= u32::MAX as usize); // prevent check on feature=unsafe
+            uassert!(res <= <Slot as Bitsized>::MAX.value() as usize);
+            Slot::new(res.try_into().unwrap())
+        })
     }
     #[inline]
     pub fn alloc_node2(&mut self) -> (Slot, Slot) {
@@ -346,6 +334,7 @@ impl Net {
     #[inline]
     pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
         uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
+        let (fst_start_out, snd_start_out) = (*fst != Ptr::IN(), *snd != Ptr::IN());
         // All cases either swap (heterogenous cases) or or don't care that they swap (homogenous cases).
         // TODO perf: see if this is an anti-optimization.
         core::mem::swap(fst, snd);
@@ -360,10 +349,10 @@ impl Net {
             }
             (false, false) => Self::add_redex(redexes, *fst, *snd),
         }
-        if *fst != Ptr::IN() {
+        if fst_start_out {
             *fst = Ptr::EMP();
         }
-        if *snd != Ptr::IN() {
+        if snd_start_out {
             *snd = Ptr::EMP()
         }
     }
@@ -664,7 +653,7 @@ mod tests {
         net.interact_ann(l, r);
         trace!(file "21.dot",; viz::mem_to_dot(&net)); // and here's an R1 generated
         let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_ann(l, r);
+        net.interact_follow(l, r);
         trace!(file "22.dot",; viz::mem_to_dot(&net));
         let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
