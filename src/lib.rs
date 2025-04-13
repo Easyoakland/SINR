@@ -662,34 +662,6 @@ mod tests {
             .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
     }
 
-    #[allow(unused_macros)]
-    macro_rules! simd_follow {
-        ($net:expr, $i:expr, $ty:ident, $n:literal) => {{
-            let net = &mut $net;
-            while net.redex[RedexTy::$ty as usize].len() >= $n {
-                trace!(file "start.dot",;viz::mem_to_dot(&net));
-                // TODO split_at{_mut} for UnsafeVec
-                let v = &mut net.redex[RedexTy::$ty as usize];
-                // Sanity check: if v.len() == $n prefix slice is [0..0) i.e. empty and suffix is [$n-len..len) i.e. everything.
-                // Safety: Just checked the length >=$n
-                let (_prefix, suffix) = unsafe { v.0.split_at_unchecked(v.len() - $n) };
-                let left = core::array::from_fn(|i| {
-                    uassert!(suffix.len() > i);
-                    suffix[i].0
-                });
-                let right = core::array::from_fn(|i| {
-                    uassert!(suffix.len() > i);
-                    suffix[i].1
-                });
-                unsafe {
-                    v.0.set_len(v.len() - $n);
-                }
-                net.interact_follow_batch::<$n>(left, right);
-
-                $i += $n;
-            }}
-        };
-    }
     #[test]
     fn speed_test() {
         let mut net = Net::default();
@@ -734,12 +706,10 @@ mod tests {
                 net.interact_com(l, r);
                 i += 1;
             }
-            // simd_follow!(net, i, FolL0, 32);
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
             }
-            // simd_follow!(net, i, FolR0, 32);
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
                 net.interact_follow(l, r);
                 i += 1;
