@@ -341,6 +341,8 @@ impl Net {
         (redex, redex_ty)
     }
     /// `ptr_to_fst` should point to `fst` with stage 1.
+    /// # Note
+    /// Either `fst` or `snd` may have been set to `EMP`. To free memory the node containing both should be checked.
     #[inline]
     pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
         uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
@@ -355,12 +357,14 @@ impl Net {
             }
             (true, false) | (false, true) => {
                 // Already swapped
-                // TODO dealloc the false (out) side ports
             }
-            (false, false) => {
-                // TODO dealloc both sides ports
-                Self::add_redex(redexes, *fst, *snd)
-            }
+            (false, false) => Self::add_redex(redexes, *fst, *snd),
+        }
+        if *fst != Ptr::IN() {
+            *fst = Ptr::EMP();
+        }
+        if *snd != Ptr::IN() {
+            *snd = Ptr::EMP()
         }
     }
 
@@ -381,25 +385,26 @@ impl Net {
             out.set_tag(PtrTag::RightAux1);
             out
         });
+        if *left == Node::EMP() {
+            self.free_list.push(left_ptr.slot());
+        }
+        if *right == Node::EMP() {
+            self.free_list.push(right_ptr.slot());
+        }
     }
 
     /// Follow target which is an auxiliary.
     /// Either it redirects to another port or it is a [`Ptr::IN()`]
     /// After following `source` is connected again.
+    /// # Note
+    /// `target` port might be `PtrTag::EMP()` after this. Check the node containing it to maybe free memory.
     #[inline]
-    pub fn follow_target(
-        free_list: &mut FreeList,
-        redexes: &mut Redexes,
-        source: Ptr,
-        target: &mut Ptr,
-        target_other: Ptr,
-        target_slot: Slot,
-    ) {
+    pub fn follow_target(redexes: &mut Redexes, source: Ptr, target: &mut Ptr) {
         if *target == Ptr::IN() {
             *target = source // redirect to the new port
         } else {
             Self::add_redex(redexes, source, *target);
-            Self::free_port(free_list, target, target_other, target_slot);
+            *target = Ptr::EMP()
         }
     }
 
@@ -417,14 +422,16 @@ impl Net {
         // ll2 and lr2 are now of type rt
         // rl2 and rr2 are now of type lt
         // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
-        #[rustfmt::skip]
-        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(rt, ll2), ll, *lr,left_ptr.slot());
-        #[rustfmt::skip]
-        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(rt, lr2), lr, *ll, left_ptr.slot());
-        #[rustfmt::skip]
-        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(lt, rl2), rl, *rr,right_ptr.slot());
-        #[rustfmt::skip]
-        Self::follow_target(&mut self.free_list, &mut self.redex, Ptr::new(lt, rr2), rr, *rl,right_ptr.slot());
+        Self::follow_target(&mut self.redex, Ptr::new(rt, ll2), ll);
+        Self::follow_target(&mut self.redex, Ptr::new(rt, lr2), lr);
+        Self::follow_target(&mut self.redex, Ptr::new(lt, rl2), rl);
+        Self::follow_target(&mut self.redex, Ptr::new(lt, rr2), rr);
+        if *left == Node::EMP() {
+            self.free_list.push(left_ptr.slot());
+        }
+        if *right == Node::EMP() {
+            self.free_list.push(right_ptr.slot());
+        }
 
         // Make new nodes and link their aux together so each has 1 out and 1 in.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
@@ -454,19 +461,15 @@ impl Net {
         ));
 
         let right_node = &mut self.nodes[right.slot_usize()];
-        let (target, target_other) = match right.tag().aux_side() {
-            LeftRight::Left => (&mut right_node.left, &mut right_node.right),
-            LeftRight::Right => (&mut right_node.right, &mut right_node.left),
+        let target = match right.tag().aux_side() {
+            LeftRight::Left => &mut right_node.left,
+            LeftRight::Right => &mut right_node.right,
         };
 
-        Self::follow_target(
-            &mut self.free_list,
-            &mut self.redex,
-            left,
-            target,
-            *target_other,
-            right.slot(),
-        );
+        Self::follow_target(&mut self.redex, left, target);
+        if *right_node == Node::EMP() {
+            self.free_list.push(right.slot());
+        }
     }
 }
 
