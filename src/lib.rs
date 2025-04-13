@@ -686,7 +686,10 @@ mod tests {
         for _ in 0..111 {
             infinite_reduction_net(&mut net);
         }
-        let mut i = 0;
+        let mut interactions = 0;
+        let mut interactions_com = 0;
+        let mut interactions_ann = 0;
+        let mut interactions_fol = 0;
         let mut redexes_max = 0usize;
         let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
@@ -700,36 +703,53 @@ mod tests {
             // );
             while let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
                 net.interact_ann(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_ann += 1;
             }
             while let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
                 net.interact_com(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_com += 1;
             }
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
                 net.interact_follow(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
                 net.interact_follow(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
                 net.interact_follow(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
                 net.interact_follow(l, r);
-                i += 1;
+                interactions += 1;
+                interactions_fol += 1;
             }
         }
         let end = std::time::Instant::now();
         eprintln!("Max redexes {}", redexes_max);
         eprintln!("Nodes max {}", nodes_max);
-        eprintln!("Total time: {:?} for {i} interactions", end - start);
+        eprintln!("Total time: {:?}", end - start);
         eprintln!(
-            "MIPS: {}",
-            i as f32 / (end.duration_since(start)).as_micros() as f32
+            "---\n\
+            total: {interactions}\n\
+            commute: {interactions_com}\n\
+            annihilate: {interactions_ann}\n\
+            follow: {interactions_fol}",
+        );
+        eprintln!(
+            "---\n\
+            All MIPS: {}\n\
+            Non-follow MIPS: {}",
+            interactions as f32 / (end.duration_since(start)).as_micros() as f32,
+            (interactions - interactions_fol) as f32
+                / (end.duration_since(start)).as_micros() as f32
         );
     }
 }
