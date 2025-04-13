@@ -1,5 +1,4 @@
-use crate::{left_right::LeftRight, Net, Ptr, Redex};
-use bilge::prelude::u29;
+use crate::{left_right::LeftRight, Net, Ptr, Redex, Slot};
 use petgraph::{dot::Dot, Directed};
 use std::collections::HashSet;
 
@@ -37,7 +36,7 @@ fn mem_to_graph(net: &Net) -> VizGraph {
     let mut graph = petgraph::stable_graph::StableGraph::new();
     let mut empty = Vec::new();
     // From, to
-    let mut visited_from_to = HashSet::<((u29, LeftRight), Ptr)>::new();
+    let mut visited_from_to = HashSet::<((Slot, LeftRight), Ptr)>::new();
     let mut to_visit = vec![];
     for (i, node) in net.nodes.0.iter().enumerate() {
         graph.add_node(format!("{}", i));
@@ -84,7 +83,7 @@ fn mem_to_graph(net: &Net) -> VizGraph {
 
     for (from, to) in visited_from_to {
         graph.add_edge(
-            from.0.value().into(),
+            u32::try_from(from.0.value()).unwrap().into(),
             to.slot_u32().into(),
             format!("{}{}->{}{}", from.0, from.1, to.slot(), to.tag()),
         );

@@ -1,6 +1,7 @@
 //! Various macros. The `u` prefixed macros such as `uassert!` avoid performing any checks if the `unsafe` feature is active.
 
 #![allow(unused_macros)]
+#![allow(unused_imports)]
 
 macro_rules! trace {
     (file $fmt:expr, $($name:expr),* ; $val:expr $(,)?) => {

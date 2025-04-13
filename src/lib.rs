@@ -117,6 +117,8 @@ impl PtrTag {
     }
 }
 
+type Slot = u29;
+
 #[bilge::bitsize(32)]
 #[derive(
     Clone,
@@ -136,7 +138,7 @@ struct Ptr {
     // This could be bigger. Chose smaller number to give best opportunity for performance to not suffer.
     // This means we can address 2^29 nodes or 2^32 bytes since each node is u64 in size.
     // If `Ptr` was a u64 then 2^61 nodes or 2^67 bytes since each node is u128 in size, or make PtrTag 6 bits to get 2^64 bytes.
-    slot: u29,
+    slot: Slot,
 }
 
 impl Default for Ptr {
@@ -151,10 +153,11 @@ impl Ptr {
     /// An empty, unused ptr slot. Everything after a calloc should be EMP.
     pub const EMP: fn() -> Ptr = || Ptr { value: 0 };
     /// Auxiliary which is pointed *to* but doesn't point out.
-    pub const IN: fn() -> Ptr = || Ptr::new(PtrTag::from(u3::new(1)), u29::new(0));
+    pub const IN: fn() -> Ptr = || Ptr::new(PtrTag::from(u3::new(1)), Slot::new(0));
+    // Only used by `viz` so okay to be slow.
     #[inline]
     pub fn slot_u32(self) -> u32 {
-        self.slot().value()
+        self.slot().value().try_into().unwrap()
     }
     #[inline]
     pub fn slot_usize(self) -> usize {
@@ -276,19 +279,19 @@ impl Net {
         self.nodes[idx.slot_usize()] = Node::EMP();
     }
     #[inline]
-    pub fn alloc_node(&mut self) -> u29 {
+    pub fn alloc_node(&mut self) -> Slot {
         let res = self.nodes.len();
         self.nodes.push(Node::default());
         uassert!(res <= u32::MAX as usize); // prevent check on feature=unsafe
-        uassert!(res <= <u29 as Bitsized>::MAX.value() as usize);
-        u29::new(res.try_into().unwrap())
+        uassert!(res <= <Slot as Bitsized>::MAX.value() as usize);
+        Slot::new(res.try_into().unwrap())
     }
     #[inline]
-    pub fn alloc_node2(&mut self) -> (u29, u29) {
+    pub fn alloc_node2(&mut self) -> (Slot, Slot) {
         (self.alloc_node(), self.alloc_node())
     }
     #[inline]
-    pub fn alloc_node4(&mut self) -> (u29, u29, u29, u29) {
+    pub fn alloc_node4(&mut self) -> (Slot, Slot, Slot, Slot) {
         let ((a, b), (c, d)) = (self.alloc_node2(), self.alloc_node2());
         (a, b, c, d)
     }
@@ -467,15 +470,15 @@ mod tests {
         let mut net = Net::default();
         net.nodes.push(Node {
             left: Ptr::IN(),
-            right: Ptr::new(PtrTag::LeftAux0, u29::new(1)),
+            right: Ptr::new(PtrTag::LeftAux0, Slot::new(1)),
         });
         net.nodes.push(Node {
             left: Ptr::IN(),
-            right: Ptr::new(PtrTag::LeftAux0, u29::new(2)),
+            right: Ptr::new(PtrTag::LeftAux0, Slot::new(2)),
         });
         net.redex[RedexTy::Ann as usize].push(Redex(
-            Ptr::new(PtrTag::Con, u29::new(1)),
-            Ptr::new(PtrTag::Con, u29::new(2)),
+            Ptr::new(PtrTag::Con, Slot::new(1)),
+            Ptr::new(PtrTag::Con, Slot::new(2)),
         ));
         trace!(file "end.dot",; viz::mem_to_dot(&net));
     }
@@ -486,7 +489,7 @@ mod tests {
             let slot = net.nodes.len();
             net.nodes.push(Node {
                 left: Ptr::IN(),
-                right: Ptr::new(PtrTag::LeftAux0, u29::new(slot.try_into().unwrap())),
+                right: Ptr::new(PtrTag::LeftAux0, Slot::new(slot.try_into().unwrap())),
             });
         };
         make_id(&mut net);
@@ -494,18 +497,18 @@ mod tests {
         make_id(&mut net);
         make_id(&mut net);
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, u29::new(1)),
-            right: Ptr::new(PtrTag::Con, u29::new(2)),
+            left: Ptr::new(PtrTag::Con, Slot::new(1)),
+            right: Ptr::new(PtrTag::Con, Slot::new(2)),
         });
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, u29::new(3)),
-            right: Ptr::new(PtrTag::Con, u29::new(4)),
+            left: Ptr::new(PtrTag::Con, Slot::new(3)),
+            right: Ptr::new(PtrTag::Con, Slot::new(4)),
         });
         net.redex[RedexTy::Ann as usize].push(Redex(
-            Ptr::new(PtrTag::Con, u29::new(5)),
-            Ptr::new(PtrTag::Con, u29::new(6)),
+            Ptr::new(PtrTag::Con, Slot::new(5)),
+            Ptr::new(PtrTag::Con, Slot::new(6)),
         ));
-        net.set_root(Ptr::new(PtrTag::Con, u29::new(1)));
+        net.set_root(Ptr::new(PtrTag::Con, Slot::new(1)));
         net
     }
 
@@ -531,7 +534,7 @@ mod tests {
             let slot = net.nodes.len();
             net.nodes.push(Node {
                 left: Ptr::IN(),
-                right: Ptr::new(PtrTag::LeftAux0, u29::new(slot.try_into().unwrap())),
+                right: Ptr::new(PtrTag::LeftAux0, Slot::new(slot.try_into().unwrap())),
             });
         };
         make_id(&mut net);
@@ -539,18 +542,18 @@ mod tests {
         make_id(&mut net);
         make_id(&mut net);
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, u29::new(1)),
-            right: Ptr::new(PtrTag::Con, u29::new(2)),
+            left: Ptr::new(PtrTag::Con, Slot::new(1)),
+            right: Ptr::new(PtrTag::Con, Slot::new(2)),
         });
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, u29::new(3)),
-            right: Ptr::new(PtrTag::Con, u29::new(4)),
+            left: Ptr::new(PtrTag::Con, Slot::new(3)),
+            right: Ptr::new(PtrTag::Con, Slot::new(4)),
         });
         net.redex[RedexTy::Com as usize].push(Redex(
-            Ptr::new(PtrTag::Con, u29::new(5)),
-            Ptr::new(PtrTag::Dup, u29::new(6)),
+            Ptr::new(PtrTag::Con, Slot::new(5)),
+            Ptr::new(PtrTag::Dup, Slot::new(6)),
         ));
-        net.set_root(Ptr::new(PtrTag::Con, u29::new(1)));
+        net.set_root(Ptr::new(PtrTag::Con, Slot::new(1)));
         net
     }
 
