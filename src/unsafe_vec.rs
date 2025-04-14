@@ -34,7 +34,7 @@ fn unsafe_index_mut<T>(val: &mut [T], index: usize) -> &mut T {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct UnsafeVec<T>(pub Vec<T>);
 impl<T> UnsafeVec<T> {

@@ -442,12 +442,9 @@ impl Net {
         };
     }
 
-    /// Interact an redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
+    /// Interact a redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
     pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
-        uassert!(!matches!(
-            right.tag(),
-            PtrTag::Con | PtrTag::Dup | PtrTag::Era
-        ));
+        uassert!(right.tag().is_aux());
 
         let right_node = &mut self.nodes[right.slot_usize()];
         let target = match right.tag().aux_side() {
