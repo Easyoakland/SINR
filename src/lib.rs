@@ -154,6 +154,10 @@ impl Ptr {
     pub const EMP: fn() -> Ptr = || Ptr { value: 0 };
     /// Auxiliary which is pointed *to* but doesn't point out.
     pub const IN: fn() -> Ptr = || Ptr::new(PtrTag::from(u3::new(1)), Slot::new(0));
+    /// An eraser doesn't need to be allocated since it contains no information (no data or auxiliary ports).\
+    /// As such, we can create new erasers by using slot 0 since the slot doesn't matter (or mean anything).\
+    /// We can also change only the tag and leave the slot the same if that turns out to be faster.
+    pub const ERA_0: fn() -> Ptr = || Ptr::new(PtrTag::Era, Slot::new(0));
     // Only used by `viz` so okay to be slow.
     #[inline]
     pub fn slot_u32(self) -> u32 {
@@ -225,13 +229,17 @@ impl RedexTy {
     }
 }
 
-type Redexes = [UnsafeVec<Redex>; RedexTy::LEN];
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Redexes {
+    regular: [UnsafeVec<Redex>; RedexTy::LEN],
+    erase: UnsafeVec<Ptr>,
+}
 type Nodes = UnsafeVec<Node>;
 type FreeList = UnsafeVec<Slot>;
 #[derive(Debug, Clone)]
 struct Net {
     nodes: Nodes,
-    redex: Redexes,
+    redexes: Redexes,
     free_list: FreeList,
 }
 impl Default for Net {
@@ -241,16 +249,17 @@ impl Default for Net {
             // The first slot can't be pointed towards since slot 0 is an invalid slot id.
             // Can, however, use slot 0 to point towards something, e.g., the root of the net.
             nodes: UnsafeVec(vec![Node::EMP()]),
-            redex: Default::default(),
+            redexes: Default::default(),
             free_list: UnsafeVec(Vec::new()),
         };
         #[cfg(feature = "prealloc")]
         {
             net.nodes.0.reserve(1000000000);
-            for redex in &mut net.redex {
+            for redex in &mut net.redexes.regular {
                 redex.0.reserve(1000000000)
             }
             net.free_list.0.reserve(1000000000);
+            net.redexes.erase.0.reserve(100000000);
         }
         net
     }
@@ -299,8 +308,30 @@ impl Net {
     }
     #[inline]
     pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
-        let (redex, redex_ty) = Self::new_redex(left, right);
-        redexes[redex_ty as usize].push(redex);
+        let lt = left.tag();
+        let rt = right.tag();
+        // TODO this check is redundant. inline `new_redex` so we don't have to do this twice.
+        match (lt, rt) {
+            _ if (rt as u8) < 4 => {
+                let (redex, redex_ty) = (Redex::new(left, right), unsafe {
+                    RedexTy::from_u8(rt as u8)
+                });
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+            _ if (lt as u8) < 4 => {
+                let (redex, redex_ty) = (Redex::new(right, left), unsafe {
+                    RedexTy::from_u8(lt as u8)
+                });
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+            (PtrTag::Era, PtrTag::Era) => (), // TODO check if nodes are already freed as needed by use of `add_redex`.
+            (PtrTag::Era, _) => redexes.erase.push(right),
+            (_, PtrTag::Era) => redexes.erase.push(left),
+            _ => {
+                let (redex, redex_ty) = Self::new_redex(left, right);
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+        }
     }
     #[inline]
     pub fn new_redex(left: Ptr, right: Ptr) -> (Redex, RedexTy) {
@@ -364,12 +395,12 @@ impl Net {
         let (ll, lr) = (&mut left.left, &mut left.right);
         let (rl, rr) = (&mut right.left, &mut right.right);
 
-        Self::link_aux_ports(&mut self.redex, ll, rl, {
+        Self::link_aux_ports(&mut self.redexes, ll, rl, {
             let mut out = left_ptr;
             out.set_tag(PtrTag::LeftAux1);
             out
         });
-        Self::link_aux_ports(&mut self.redex, lr, rr, {
+        Self::link_aux_ports(&mut self.redexes, lr, rr, {
             let mut out = left_ptr;
             out.set_tag(PtrTag::RightAux1);
             out
@@ -382,7 +413,7 @@ impl Net {
         }
     }
 
-    /// Follow target which is an auxiliary.
+    /// Follow target which is a &mut to an auxiliary port.
     /// Either it redirects to another port or it is a [`Ptr::IN()`]
     /// After following `source` is connected again.
     /// # Note
@@ -411,10 +442,12 @@ impl Net {
         // ll2 and lr2 are now of type rt
         // rl2 and rr2 are now of type lt
         // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
-        Self::follow_target(&mut self.redex, Ptr::new(rt, ll2), ll);
-        Self::follow_target(&mut self.redex, Ptr::new(rt, lr2), lr);
-        Self::follow_target(&mut self.redex, Ptr::new(lt, rl2), rl);
-        Self::follow_target(&mut self.redex, Ptr::new(lt, rr2), rr);
+        uassert!(!rt.is_aux());
+        uassert!(!lt.is_aux());
+        Self::follow_target(&mut self.redexes, Ptr::new(rt, ll2), ll);
+        Self::follow_target(&mut self.redexes, Ptr::new(rt, lr2), lr);
+        Self::follow_target(&mut self.redexes, Ptr::new(lt, rl2), rl);
+        Self::follow_target(&mut self.redexes, Ptr::new(lt, rr2), rr);
         if *left == Node::EMP() {
             self.free_list.push(left_ptr.slot());
         }
@@ -452,9 +485,28 @@ impl Net {
             LeftRight::Right => &mut right_node.right,
         };
 
-        Self::follow_target(&mut self.redex, left, target);
+        Self::follow_target(&mut self.redexes, left, target);
         if *right_node == Node::EMP() {
             self.free_list.push(right.slot());
+        }
+    }
+
+    /// Erase the node pointed to by `Ptr`
+    ///
+    /// Erasers need a unique interaction distinct from annihilate because vicious circles of wires can be created if using the annihilate interaction to erase things.
+    /// On the positive side, this might speed things up and means that many erase nodes don't actually have to be stored in new slots of the net.
+    pub fn interact_era(&mut self, ptr: Ptr) {
+        let node_idx = ptr.slot_usize();
+        let node = &mut self.nodes[node_idx];
+
+        if node.left != Ptr::EMP() {
+            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left)
+        };
+        if node.right != Ptr::EMP() {
+            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.right)
+        };
+        if *node == Node::EMP() {
+            self.free_list.push(ptr.slot());
         }
     }
 }
@@ -493,7 +545,7 @@ mod tests {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, Slot::new(2)),
         });
-        net.redex[RedexTy::Ann as usize].push(Redex(
+        net.redexes.regular[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, Slot::new(1)),
             Ptr::new(PtrTag::Con, Slot::new(2)),
         ));
@@ -521,7 +573,7 @@ mod tests {
             left: Ptr::new(PtrTag::Con, Slot::new(3)),
             right: Ptr::new(PtrTag::Con, Slot::new(4)),
         });
-        net.redex[RedexTy::Ann as usize].push(Redex(
+        net.redexes.regular[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, Slot::new(5)),
             Ptr::new(PtrTag::Con, Slot::new(6)),
         ));
@@ -533,14 +585,14 @@ mod tests {
     fn test_ann() {
         let mut net = _2layer_con_net();
         trace!(file "0.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redexes.regular[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "1.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        let Redex(l, r) = net.redexes.regular[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "2.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        dbg!(&net.redex);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        dbg!(&net.redexes);
         net.interact_follow(l, r);
         trace!(file "3.dot",; viz::mem_to_dot(&net));
     }
@@ -557,20 +609,18 @@ mod tests {
         make_id(&mut net);
         make_id(&mut net);
         make_id(&mut net);
-        make_id(&mut net);
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, Slot::new(1)),
-            right: Ptr::new(PtrTag::Con, Slot::new(2)),
+            left: Ptr::ERA_0(),
+            right: Ptr::new(PtrTag::Con, Slot::new(1)),
         });
         net.nodes.push(Node {
-            left: Ptr::new(PtrTag::Con, Slot::new(3)),
-            right: Ptr::new(PtrTag::Con, Slot::new(4)),
+            left: Ptr::new(PtrTag::Con, Slot::new(2)),
+            right: Ptr::new(PtrTag::Con, Slot::new(3)),
         });
-        net.redex[RedexTy::Com as usize].push(Redex(
-            Ptr::new(PtrTag::Con, Slot::new(5)),
-            Ptr::new(PtrTag::Dup, Slot::new(6)),
+        net.redexes.regular[RedexTy::Com as usize].push(Redex(
+            Ptr::new(PtrTag::Con, Slot::new(4)),
+            Ptr::new(PtrTag::Dup, Slot::new(5)),
         ));
-        net.set_root(Ptr::new(PtrTag::Con, Slot::new(1)));
         net
     }
 
@@ -578,107 +628,101 @@ mod tests {
     fn test_com() {
         let mut net = _2layer_con_dup_net();
         trace!(file "0.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
+        eprintln!("0 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::Com as usize].pop().unwrap();
         net.interact_com(l, r);
         trace!(file "1.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
+        eprintln!("1 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::Ann as usize].pop().unwrap();
         net.interact_ann(l, r);
         trace!(file "2.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
+        eprintln!("2 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::Com as usize].pop().unwrap();
         net.interact_com(l, r);
         trace!(file "3.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        eprintln!("3 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "4.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        eprintln!("4 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "5.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
+        eprintln!("5 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "6.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
+        eprintln!("6 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolR0 as usize].pop().unwrap();
         net.interact_follow(l, r);
         trace!(file "7.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Com as usize].pop().unwrap();
-        net.interact_com(l, r);
+        eprintln!("7 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "8.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("8 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::Ann as usize].pop().unwrap();
+        net.interact_ann(l, r);
         trace!(file "9.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("9 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::Ann as usize].pop().unwrap();
+        net.interact_ann(l, r);
         trace!(file "10.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
-        net.interact_ann(l, r);
+        eprintln!("10 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "11.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
-        net.interact_ann(l, r);
-        trace!(file "12.dot",; viz::mem_to_dot(&net)); // note LeftAux1 used here in 12L->16L1
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
-        net.interact_ann(l, r);
+        eprintln!("11 {:?}", net.free_list);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
+        trace!(file "12.dot",; viz::mem_to_dot(&net));
+        eprintln!("12 {:?}", net.free_list);
+        // Now race is resolved by existence of stages.
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL1 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "13.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
-        net.interact_ann(l, r);
+        eprintln!("13 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(dbg!(p));
         trace!(file "14.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("14 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "15.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        // Note this will never happen
-        // but this is the easiest way to confirm that the stage0,1 technique will prevent the race.
-        // If this doesn't happen the bad case will trivially not occur, but I want to try the bad case.
-        // This also doesn't break anything since the redex that's being flipped is R0, L0 so interact_follow should work anyway.
-        let (r, l) = (l, r);
-        net.interact_follow(l, r);
+        eprintln!("15 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "16.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("16 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "17.dot",; viz::mem_to_dot(&net));
-        // And here we see the stage method will prevent a race. Either RedexTy::FolL0 or RedexTy::FolL1 will run next, but not both simultaneously.
-        // Admittedly, this isn't a great example because of the circular path of the node onto itself, and the fact that the node is only in 1 redex, but the hopefully the idea is clear.
-        // If it were in two redexes, one that wanted to follow L0 and one that wanted to follow L1, then they wouldn't conflict because they are in different stages.
-        let Redex(l, r) = net.redex[RedexTy::FolL1 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("17 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "18.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("18 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "19.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
+        eprintln!("19 {:?}", net.free_list);
+        let p = net.redexes.erase.pop().unwrap();
+        net.interact_era(p);
         trace!(file "20.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::Ann as usize].pop().unwrap();
-        net.interact_ann(l, r);
-        trace!(file "21.dot",; viz::mem_to_dot(&net)); // and here's an R1 generated
-        let Redex(l, r) = net.redex[RedexTy::FolL0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
-        trace!(file "22.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolR0 as usize].pop().unwrap();
-        net.interact_follow(l, r);
-        trace!(file "23.dot",; viz::mem_to_dot(&net));
-        let Redex(l, r) = net.redex[RedexTy::FolR1 as usize].pop().unwrap();
-        net.interact_follow(l, r);
-        trace!(file "24.dot",; viz::mem_to_dot(&net));
+        eprintln!("20 {:?}", net.free_list);
     }
 
     fn infinite_reduction_net(net: &mut Net) {
-        let (n1, n2, e1, e2) = net.alloc_node4();
+        let (n1, n2) = net.alloc_node2();
         net.nodes[n1.value() as usize] = Node {
-            left: Ptr::new(PtrTag::Era, e1),
+            left: Ptr::ERA_0(),
             right: Ptr::new(PtrTag::RightAux0, n2),
         };
         net.nodes[n2.value() as usize] = Node {
-            left: Ptr::new(PtrTag::Era, e2),
+            left: Ptr::ERA_0(),
             right: Ptr::IN(),
         };
-        net.nodes[e1.value() as usize] = Node {
-            left: Ptr::IN(),
-            right: Ptr::new(PtrTag::LeftAux0, e1),
-        };
-        net.nodes[e2.value() as usize] = Node {
-            left: Ptr::IN(),
-            right: Ptr::new(PtrTag::LeftAux0, e2),
-        };
-        net.redex[RedexTy::Com as usize]
+        net.redexes.regular[RedexTy::Com as usize]
             .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
     }
 
@@ -693,7 +737,7 @@ mod tests {
         for _ in 0..1000000000 {
             net.nodes.pop();
         }
-        for redex in &mut net.redex {
+        for redex in &mut net.redexes.regular {
             for _ in 0..1000000 {
                 redex.push(Redex::default());
             }
@@ -706,51 +750,78 @@ mod tests {
         for _ in 0..111 {
             infinite_reduction_net(&mut net);
         }
+        trace!(file "start.dot",;viz::mem_to_dot(&net));
         let mut interactions = 0;
         let mut interactions_com = 0;
         let mut interactions_ann = 0;
         let mut interactions_fol = 0;
+        let mut interactions_era = 0;
         let mut redexes_max = 0usize;
         let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
         const ITERS: usize = 400000;
         for _ in 0..ITERS {
             nodes_max = nodes_max.max(net.nodes.len());
-            redexes_max = redexes_max.max(net.redex.iter().flat_map(|x| &x.0).count());
+            redexes_max = redexes_max.max(net.redexes.regular.iter().flat_map(|x| &x.0).count());
+            // eprintln!(
+            //     "len {:?} val: {:?}",
+            //     net.free_list.len(),
+            //     &net.free_list.0.get(0..100)
+            // );
             // eprintln!(
             //     "{:0>2?}",
             //     net.redex.iter().map(|x| x.len()).collect::<Vec<_>>()
             // );
-            while let Some(Redex(l, r)) = net.redex[RedexTy::Ann as usize].0.pop() {
+            trace!(file "interact{interactions}.dot",;viz::mem_to_dot(&net));
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Ann as usize].pop() {
                 net.interact_ann(l, r);
                 interactions += 1;
                 interactions_ann += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            while let Some(Redex(l, r)) = net.redex[RedexTy::Com as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() {
                 net.interact_com(l, r);
                 interactions += 1;
                 interactions_com += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            while let Some(Redex(l, r)) = net.redex[RedexTy::FolL0 as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL0 as usize].pop() {
+                net.interact_follow(dbg!(l), dbg!(r));
+                interactions += 1;
+                interactions_fol += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
+            }
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR0 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            while let Some(Redex(l, r)) = net.redex[RedexTy::FolR0 as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL1 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            while let Some(Redex(l, r)) = net.redex[RedexTy::FolL1 as usize].0.pop() {
+            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR1 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
+                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            while let Some(Redex(l, r)) = net.redex[RedexTy::FolR1 as usize].0.pop() {
-                net.interact_follow(l, r);
+            eprintln!("before free_list len {}", net.free_list.len());
+            while let Some(ptr) = net.redexes.erase.pop() {
+                dbg!(ptr);
+                dbg!(net.nodes[ptr.slot_usize()]);
+                net.interact_era(ptr);
+                eprintln!("to erase: {}", net.redexes.erase.len());
                 interactions += 1;
-                interactions_fol += 1;
+                interactions_era += 1;
+                dbg!(net.nodes[ptr.slot_usize()]);
+                trace!(file "interact{interactions}-ptr-{}.dot",ptr.slot();viz::mem_to_dot(&net));
+                dbg!("");
             }
+            eprintln!("after free_list len {}", net.free_list.len());
         }
         let end = std::time::Instant::now();
         eprintln!("Max redexes {}", redexes_max);
@@ -761,6 +832,7 @@ mod tests {
             total: {interactions}\n\
             commute: {interactions_com}\n\
             annihilate: {interactions_ann}\n\
+            erase: {interactions_era}\n\
             follow: {interactions_fol}",
         );
         eprintln!(
@@ -770,6 +842,11 @@ mod tests {
             interactions as f32 / (end.duration_since(start)).as_micros() as f32,
             (interactions - interactions_fol) as f32
                 / (end.duration_since(start)).as_micros() as f32
+        );
+        eprintln!(
+            "len: {}, {:?}",
+            net.free_list.len(),
+            &net.free_list.0.get(0..100)
         );
     }
 }

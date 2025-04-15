@@ -1,4 +1,4 @@
-use crate::{left_right::LeftRight, Net, Ptr, Redex, Slot};
+use crate::{left_right::LeftRight, Net, Ptr, PtrTag, Redex, Slot};
 use petgraph::{dot::Dot, Directed};
 use std::collections::HashSet;
 
@@ -8,26 +8,44 @@ fn viz_graph(viz: &VizGraph) -> String {
     Dot::new(viz).to_string()
 }
 pub fn mem_to_dot(mem: &Net) -> String {
-    let active_nodes = mem.redex.iter().map(|x| &x.0).flatten();
+    let erasing_nodes = mem
+        .redexes
+        .erase
+        .0
+        .iter()
+        .map(|x| {
+            format!(
+                "\neps{0} [label = \"ε\", color = \"red\"]\n\
+                {0} [color = \"red\"]\n\
+                eps{0} -> {0} [label = \"{1}{2}\"]\n",
+                x.slot_usize(),
+                x.slot(),
+                x.tag()
+            )
+        })
+        .collect::<String>();
+    let active_nodes = mem.redexes.regular.iter().map(|x| &x.0).flatten();
     let color_active_nodes = active_nodes
         .map(|Redex(x, y)| {
             format!(
                 "A{0}_{1} [color = \"red\"]\n\
                 {0} [color = \"red\"]\n\
                 {1} [color = \"red\"]\n\
-                A{0}_{1} -> {0}\n\
-                A{0}_{1} -> {1}\n",
+                A{0}_{1} -> {0}[label=\"{2}{3}\"]\n\
+                A{0}_{1} -> {1}[label=\"{4}{5}\"]\n",
                 x.slot_usize(),
-                y.slot_usize()
+                y.slot_usize(),
+                x.slot(),
+                x.tag(),
+                y.slot(),
+                y.tag()
             )
         })
         .chain(["\n}".to_owned()])
-        .fold(String::new(), |mut acc, x| {
-            acc.push_str(&x);
-            acc
-        });
+        .collect::<String>();
     let mut dot_output = viz_graph(&mem_to_graph(mem));
     dot_output.truncate(dot_output.len() - 2);
+    dot_output.push_str(&erasing_nodes);
     dot_output.push_str(&color_active_nodes);
     dot_output
 }
@@ -46,27 +64,33 @@ fn mem_to_graph(net: &Net) -> VizGraph {
     }
 
     for tip in net
-        .redex
+        .redexes
+        .regular
         .iter()
         .flat_map(|x| x.0.iter().flat_map(|x| [x.0, x.1]))
+        .chain(net.redexes.erase.0.iter().copied())
     {
+        if tip.value == 0 {
+            panic!()
+        }
         to_visit.push(tip);
         // Visit over the tree starting from the tip.
         while let Some(current) = to_visit.pop() {
-            // if let Some(parent) = parent {
-            //     visited_from_to.insert((parent, next));
-            // }
             match net.read(current) {
                 crate::Either::A(node) => {
                     // The node at has an edge where its two aux ptrs go.
                     // If either is an `IN` that isn't an outgoing, hopefully that will be connected later by the graph traversal.
                     if node.left != Ptr::IN() {
                         visited_from_to.insert(((current.slot(), LeftRight::Left), node.left));
-                        to_visit.push(node.left);
+                        if current.tag() != PtrTag::Era {
+                            to_visit.push(node.left);
+                        }
                     }
                     if node.right != Ptr::IN() {
                         visited_from_to.insert(((current.slot(), LeftRight::Right), node.right));
-                        to_visit.push(node.right);
+                        if current.tag() != PtrTag::Era {
+                            to_visit.push(node.right);
+                        }
                     }
                 }
                 crate::Either::B(aux) => {
@@ -94,7 +118,8 @@ fn mem_to_graph(net: &Net) -> VizGraph {
         }
     }
     for to in net
-        .redex
+        .redexes
+        .regular
         .iter()
         .flat_map(|x| x.0.iter())
         .flat_map(|Redex(x, y)| [x, y])
@@ -105,10 +130,17 @@ fn mem_to_graph(net: &Net) -> VizGraph {
         }
         w.push_str(&format!("{}", to.tag()));
     }
+    // for to in net.redexes.erase.0.iter() {
+    //     let w = graph.node_weight_mut(to.slot_u32().into()).unwrap();
+    //     if !w.is_empty() {
+    //         w.push_str(", ");
+    //     }
+    //     w.push_str("redex ε");
+    // }
 
-    for node in empty {
-        graph.remove_node(u32::try_from(node).unwrap().into());
-    }
+    // for node in empty {
+    //     graph.remove_node(u32::try_from(node).unwrap().into());
+    // }
 
     graph
 }
