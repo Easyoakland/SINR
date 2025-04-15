@@ -772,56 +772,41 @@ mod tests {
             //     "{:0>2?}",
             //     net.redex.iter().map(|x| x.len()).collect::<Vec<_>>()
             // );
-            trace!(file "interact{interactions}.dot",;viz::mem_to_dot(&net));
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Ann as usize].pop() {
                 net.interact_ann(l, r);
                 interactions += 1;
                 interactions_ann += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() {
                 net.interact_com(l, r);
                 interactions += 1;
                 interactions_com += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL0 as usize].pop() {
-                net.interact_follow(dbg!(l), dbg!(r));
+                net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR0 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL1 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR1 as usize].pop() {
                 net.interact_follow(l, r);
                 interactions += 1;
                 interactions_fol += 1;
-                trace!(file "interact{interactions}-{}-{}.dot",l.slot(),r.slot();viz::mem_to_dot(&net));
             }
-            eprintln!("before free_list len {}", net.free_list.len());
             while let Some(ptr) = net.redexes.erase.pop() {
-                dbg!(ptr);
-                dbg!(net.nodes[ptr.slot_usize()]);
                 net.interact_era(ptr);
-                eprintln!("to erase: {}", net.redexes.erase.len());
                 interactions += 1;
                 interactions_era += 1;
-                dbg!(net.nodes[ptr.slot_usize()]);
-                trace!(file "interact{interactions}-ptr-{}.dot",ptr.slot();viz::mem_to_dot(&net));
-                dbg!("");
             }
-            eprintln!("after free_list len {}", net.free_list.len());
         }
         let end = std::time::Instant::now();
         eprintln!("Max redexes {}", redexes_max);
