@@ -117,9 +117,9 @@ impl PtrTag {
     }
 }
 
-type Slot = u29;
+type Slot = u61;
 
-#[bilge::bitsize(32)]
+#[bilge::bitsize(64)]
 #[derive(
     Clone,
     Copy,
@@ -253,12 +253,12 @@ impl Default for Net {
         };
         #[cfg(feature = "prealloc")]
         {
-            net.nodes.0.reserve(1000000000);
+            net.nodes.0.reserve(100000000);
             for redex in &mut net.redexes.regular {
-                redex.0.reserve(1000000000)
+                redex.0.reserve(100000000)
             }
-            net.free_list.0.reserve(1000000000);
-            net.redexes.erase.0.reserve(100000000);
+            net.free_list.0.reserve(100000000);
+            net.redexes.erase.0.reserve(10000000);
         }
         net
     }
@@ -486,9 +486,11 @@ impl Net {
         let node = &mut self.nodes[node_idx];
 
         if node.left != Ptr::EMP() {
+            // TODO does the `add_redex` inside `follow_target` get inlined and optimized by knowing ERA_0 is always an Era? If not, have to inline manually.
             Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left)
         };
         if node.right != Ptr::EMP() {
+            // TODO does the `add_redex` inside `follow_target` get inlined and optimized by knowing ERA_0 is always an Era? If not, have to inline manually.
             Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.right)
         };
         if *node == Node::EMP() {
@@ -718,10 +720,10 @@ mod tests {
         let mut net = Net::default();
 
         // Force page faults now so they don't happen while benchmarking.
-        for _ in 0..1000000000 {
+        for _ in 0..100000000 {
             net.nodes.push(Node::default());
         }
-        for _ in 0..1000000000 {
+        for _ in 0..100000000 {
             net.nodes.pop();
         }
         for redex in &mut net.redexes.regular {
@@ -734,64 +736,57 @@ mod tests {
         }
         eprintln!("page fault warmup finished");
 
-        for _ in 0..111 {
+        for _ in 0..100000 {
             infinite_reduction_net(&mut net);
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
-        let mut interactions = 0;
-        let mut interactions_com = 0;
-        let mut interactions_ann = 0;
-        let mut interactions_fol = 0;
-        let mut interactions_era = 0;
+        let mut interactions_com = 0u64;
+        let mut interactions_ann = 0u64;
+        let mut interactions_fol = 0u64;
+        let mut interactions_era = 0u64;
         let mut redexes_max = 0usize;
         let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
         const ITERS: usize = 400000;
+        // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
+        const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(8);
         for _ in 0..ITERS {
             nodes_max = nodes_max.max(net.nodes.len());
             redexes_max = redexes_max.max(net.redexes.regular.iter().flat_map(|x| &x.0).count());
-            // eprintln!(
-            //     "len {:?} val: {:?}",
-            //     net.free_list.len(),
-            //     &net.free_list.0.get(0..100)
-            // );
-            // eprintln!(
-            //     "{:0>2?}",
-            //     net.redex.iter().map(|x| x.len()).collect::<Vec<_>>()
-            // );
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Ann as usize].pop() {
                 net.interact_ann(l, r);
-                interactions += 1;
                 interactions_ann += 1;
             }
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() {
-                net.interact_com(l, r);
-                interactions += 1;
-                interactions_com += 1;
+
+            for _ in 0..MAX_ITER_PER_ALLOC_TY {
+                let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() else {
+                    break;
+                };
+                {
+                    net.interact_com(l, r);
+                    interactions_com += 1;
+                }
             }
+
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL0 as usize].pop() {
                 net.interact_follow(l, r);
-                interactions += 1;
                 interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR0 as usize].pop() {
                 net.interact_follow(l, r);
-                interactions += 1;
                 interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL1 as usize].pop() {
                 net.interact_follow(l, r);
-                interactions += 1;
                 interactions_fol += 1;
             }
             while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR1 as usize].pop() {
                 net.interact_follow(l, r);
-                interactions += 1;
                 interactions_fol += 1;
             }
+
             while let Some(ptr) = net.redexes.erase.pop() {
                 net.interact_era(ptr);
-                interactions += 1;
                 interactions_era += 1;
             }
         }
@@ -799,6 +794,8 @@ mod tests {
         eprintln!("Max redexes {}", redexes_max);
         eprintln!("Nodes max {}", nodes_max);
         eprintln!("Total time: {:?}", end - start);
+        let interactions =
+            interactions_ann + interactions_com + interactions_era + interactions_fol;
         eprintln!(
             "---\n\
             total: {interactions}\n\
