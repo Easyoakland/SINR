@@ -479,6 +479,7 @@ impl Net {
             out
         };
         let swap_mask = array::from_fn(|i| right[i].tag().is_aux()); // false if should swap
+        let swap_mask = Mask::from_array(swap_mask);
 
         // Safety: Ptr is repr(transparent) of u32.
         let left: [u32; N] = unsafe { core::mem::transmute_copy(&left) };
@@ -487,10 +488,8 @@ impl Net {
         let right = Simd::from_array(right);
 
         // Swap left and right where swap_mask is false.
-        let new_left =
-            std::simd::Simd::load_select(&left.to_array(), Mask::from_array(swap_mask), right);
-        let new_right =
-            std::simd::Simd::load_select(&right.to_array(), Mask::from_array(swap_mask), left);
+        let new_left = swap_mask.select(right, left);
+        let new_right = swap_mask.select(left, right);
         let (left, right) = (new_left, new_right);
 
         let redexes = {
