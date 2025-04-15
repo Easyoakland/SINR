@@ -488,8 +488,8 @@ impl Net {
         let right = Simd::from_array(right);
 
         // Swap left and right where swap_mask is false.
-        let new_left = swap_mask.select(right, left);
-        let new_right = swap_mask.select(left, right);
+        let new_left = swap_mask.select(left, right);
+        let new_right = swap_mask.select(right, left);
         let (left, right) = (new_left, new_right);
 
         let redexes = {
