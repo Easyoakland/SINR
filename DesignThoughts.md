@@ -1,3 +1,4 @@
+= Tagging and queues
 Need to be able to differentiate a pointer which points towards the following possibilities:
 Era
 Con
@@ -23,3 +24,6 @@ The alternative is a substitution map indexed by the auxiliary pointer, but I do
         - There exists methods of performing filtering and compacting with SIMD such as [this](https://quickwit.io/blog/simd-range) method which reports almost perfect speedup.
     - The first is not SIMDable when loading, but after a queue gets enough interactions the interaction itself should be SIMD.
     - The first will be hard to work with the idea of 3 stages for pri-pri, laux, raux which I hope will avoid atomics on interactions themselves.
+
+= Erasure
+Originally I thought that erasure could be implemented with a regular binary combinator node with its own label that happens to always be created with its two auxiliary ports linked. That doesn't work when doing memory reclamation, though, because the vicious circles that are created when the two combinator erasers result in not realizing that certain memory slots can be freed which contain the links of that vicious circle. In other words, because redirections exist in memory a vicious circle with no interaction net nodes can still contain redirecting pseudo-nodes.
