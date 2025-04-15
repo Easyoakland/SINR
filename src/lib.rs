@@ -220,7 +220,6 @@ enum RedexTy {
 }
 impl RedexTy {
     pub const LEN: usize = 6;
-    pub const ZERO: Self = RedexTy::Ann;
     /// # Safety
     /// `val` < RedexTy::LEN
     pub unsafe fn from_u8(val: u8) -> Self {
