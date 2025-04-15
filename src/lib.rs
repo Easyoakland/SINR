@@ -673,28 +673,28 @@ mod tests {
         net.interact_era(dbg!(p));
         trace!(file "14.dot",; viz::mem_to_dot(&net));
         eprintln!("14 {:?}", net.free_list);
-        let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(p);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolR0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "15.dot",; viz::mem_to_dot(&net));
         eprintln!("15 {:?}", net.free_list);
-        let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(p);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "16.dot",; viz::mem_to_dot(&net));
         eprintln!("16 {:?}", net.free_list);
-        let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(p);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "17.dot",; viz::mem_to_dot(&net));
         eprintln!("17 {:?}", net.free_list);
         let p = net.redexes.erase.pop().unwrap();
         net.interact_era(p);
         trace!(file "18.dot",; viz::mem_to_dot(&net));
         eprintln!("18 {:?}", net.free_list);
-        let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(p);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolL0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "19.dot",; viz::mem_to_dot(&net));
         eprintln!("19 {:?}", net.free_list);
-        let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(p);
+        let Redex(l, r) = net.redexes.regular[RedexTy::FolR0 as usize].pop().unwrap();
+        net.interact_follow(l, r);
         trace!(file "20.dot",; viz::mem_to_dot(&net));
         eprintln!("20 {:?}", net.free_list);
     }
@@ -714,6 +714,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow"]
     fn speed_test() {
         let mut net = Net::default();
 
