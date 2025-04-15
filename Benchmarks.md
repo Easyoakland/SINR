@@ -238,7 +238,9 @@ Total time: 1.836576s for 266398890 interactions
 MIPS: 145.05193
 ```
 
-Device 1 with page fault warmup, while let, speed_test of infinite net single-threaded, scalar L0 and R0 follows, no memory re-use, lto = "fat", codegen-units=1, inline(always) interact_com
+~~Device 1 with page fault warmup, while let, speed_test of infinite net single-threaded, scalar L0 and R0 follows, no memory re-use, lto = "fat", codegen-units=1, inline(always) interact_com~~
+
+Can't replicate this result. Might have confused the device used.
 
 all interactions:
 ```
@@ -272,6 +274,22 @@ follow: 177599667
 ---
 All MIPS: 132.37889
 Non-follow MIPS: 56.733868
+```
+
+Device 1 re-run
+```
+Max redexes 333
+Nodes max 889
+Total time: 1.896017s
+---
+total: 310799667
+commute: 44400000
+annihilate: 0
+erase: 88800000
+follow: 177599667
+---
+All MIPS: 163.92241
+Non-follow MIPS: 70.25253
 ```
 
 Device 2 adding memory re-use to `speed_test` of infinite net
