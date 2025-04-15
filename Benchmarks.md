@@ -256,7 +256,7 @@ Total time: 2.168278s for 266398890 interactions
 MIPS: 122.86196
 ```
 
-Commit: XXX
+Commit: b50197c6cf801e360b1bc1fc87bd5a66059db34d
 
 Device 1 adding memory re-use to `speed_test` of infinite net
 ```
