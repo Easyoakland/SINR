@@ -308,33 +308,6 @@ impl Net {
     }
     #[inline]
     pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
-        let lt = left.tag();
-        let rt = right.tag();
-        // TODO this check is redundant. inline `new_redex` so we don't have to do this twice.
-        match (lt, rt) {
-            _ if (rt as u8) < 4 => {
-                let (redex, redex_ty) = (Redex::new(left, right), unsafe {
-                    RedexTy::from_u8(rt as u8)
-                });
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-            _ if (lt as u8) < 4 => {
-                let (redex, redex_ty) = (Redex::new(right, left), unsafe {
-                    RedexTy::from_u8(lt as u8)
-                });
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-            (PtrTag::Era, PtrTag::Era) => (), // TODO check if nodes are already freed as needed by use of `add_redex`.
-            (PtrTag::Era, _) => redexes.erase.push(right),
-            (_, PtrTag::Era) => redexes.erase.push(left),
-            _ => {
-                let (redex, redex_ty) = Self::new_redex(left, right);
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-        }
-    }
-    #[inline]
-    pub fn new_redex(left: Ptr, right: Ptr) -> (Redex, RedexTy) {
         uassert!(left.tag() != PtrTag::_Unused);
         uassert!(right.tag() != PtrTag::_Unused);
         uassert!(left != Ptr::EMP());
@@ -343,21 +316,35 @@ impl Net {
         uassert!(right != Ptr::IN());
         let lt = left.tag();
         let rt = right.tag();
-        let (redex, redex_ty) = match () {
+        match (lt, rt) {
             // If right is a follow.
             // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
-            _ if (rt as u8) < 4 => (Redex::new(left, right), unsafe {
-                RedexTy::from_u8(rt as u8)
-            }),
+            _ if (rt as u8) < 4 => {
+                let (redex, redex_ty) = (Redex::new(left, right), unsafe {
+                    RedexTy::from_u8(rt as u8)
+                });
+                redexes.regular[redex_ty as usize].push(redex);
+            }
             // If left is a follow.
             // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
-            _ if (lt as u8) < 4 => (Redex::new(right, left), unsafe {
-                RedexTy::from_u8(lt as u8)
-            }),
-            _ if lt == rt => (Redex::new(left, right), RedexTy::Ann),
-            _ => (Redex::new(left, right), RedexTy::Com),
-        };
-        (redex, redex_ty)
+            _ if (lt as u8) < 4 => {
+                let (redex, redex_ty) = (Redex::new(right, left), unsafe {
+                    RedexTy::from_u8(lt as u8)
+                });
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+            (PtrTag::Era, PtrTag::Era) => (),
+            (PtrTag::Era, _) => redexes.erase.push(right),
+            (_, PtrTag::Era) => redexes.erase.push(left),
+            _ if lt == rt => {
+                let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Ann);
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+            _ => {
+                let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Com);
+                redexes.regular[redex_ty as usize].push(redex);
+            }
+        }
     }
     /// `ptr_to_fst` should point to `fst` with stage 1.
     /// # Note
