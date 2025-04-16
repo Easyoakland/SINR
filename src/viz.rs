@@ -1,4 +1,9 @@
-use crate::{left_right::LeftRight, Net, Ptr, PtrTag, Redex, Slot};
+use crate::{
+    left_right::LeftRight,
+    net::{Either, Net},
+    redex::Redex,
+    Ptr, PtrTag, Slot,
+};
 use petgraph::{dot::Dot, Directed};
 use std::collections::HashSet;
 
@@ -70,14 +75,14 @@ fn mem_to_graph(net: &Net) -> VizGraph {
         .flat_map(|x| x.0.iter().flat_map(|x| [x.0, x.1]))
         .chain(net.redexes.erase.0.iter().copied())
     {
-        if tip.value == 0 {
+        if tip == Ptr::EMP() {
             panic!()
         }
         to_visit.push(tip);
         // Visit over the tree starting from the tip.
         while let Some(current) = to_visit.pop() {
             match net.read(current) {
-                crate::Either::A(node) => {
+                Either::A(node) => {
                     // The node at has an edge where its two aux ptrs go.
                     // If either is an `IN` that isn't an outgoing, hopefully that will be connected later by the graph traversal.
                     if node.left != Ptr::IN() {
@@ -93,7 +98,7 @@ fn mem_to_graph(net: &Net) -> VizGraph {
                         }
                     }
                 }
-                crate::Either::B(aux) => {
+                Either::B(aux) => {
                     // The node at `next.slot()` either has an edge terminating at a `Ptr::IN` of `aux` (which is already recorded by case A) or
                     // is redirected by where `aux` points.
                     if aux != Ptr::IN() {
