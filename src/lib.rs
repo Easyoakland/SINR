@@ -521,6 +521,7 @@ static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
 mod tests {
     use super::*;
     use crate::macros::trace;
+    use core::sync::atomic::AtomicU32;
 
     #[test]
     fn test_viz() {
@@ -715,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "slow"]
+    #[ignore = "bench"]
     fn speed_test() {
         let mut net = Net::default();
 
@@ -817,5 +818,48 @@ mod tests {
             net.free_list.len(),
             &net.free_list.0.get(0..100)
         );
+    }
+
+    #[test]
+    #[ignore = "bench"]
+    fn spinlock_latency() {
+        static A: AtomicU32 = AtomicU32::new(0);
+        const STORES: u32 = 1_000_000;
+        let spawn_thread = move |mod_: u32, incr_on: u32| {
+            let mut it = 0;
+            std::thread::spawn(move || loop {
+                let a = A.load(core::sync::atomic::Ordering::Relaxed);
+                if a > STORES {
+                    break it;
+                } else if a % mod_ == incr_on {
+                    // A.store(a + 1, core::sync::atomic::Ordering::Relaxed);
+                    A.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+                it += 1;
+            })
+        };
+        for n in 0..=(usize::from(std::thread::available_parallelism().unwrap())) {
+            let start = std::time::Instant::now();
+            let mut i = 0;
+            let incrs: Vec<std::thread::JoinHandle<u32>> = core::iter::repeat_with(|| {
+                let thread = spawn_thread(n.try_into().unwrap(), i.try_into().unwrap());
+                i += 1;
+                thread
+            })
+            .take(n)
+            .collect();
+            let incrs = incrs
+                .into_iter()
+                .map(|x| x.join().unwrap())
+                .collect::<Vec<_>>();
+            let elapsed = std::time::Instant::now().duration_since(start);
+            eprintln!(
+                "{n} incrs: {:?}, time: {:?}, sec_per_store: {:?}",
+                incrs,
+                elapsed,
+                elapsed.as_secs_f32() / (STORES as f32)
+            );
+            A.store(0, core::sync::atomic::Ordering::Relaxed)
+        }
     }
 }
