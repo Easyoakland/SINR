@@ -486,12 +486,10 @@ impl Net {
         let node = &mut self.nodes[node_idx];
 
         if node.left != Ptr::EMP() {
-            // TODO does the `add_redex` inside `follow_target` get inlined and optimized by knowing ERA_0 is always an Era? If not, have to inline manually.
-            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left)
+            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left);
         };
         if node.right != Ptr::EMP() {
-            // TODO does the `add_redex` inside `follow_target` get inlined and optimized by knowing ERA_0 is always an Era? If not, have to inline manually.
-            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.right)
+            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.right);
         };
         if *node == Node::EMP() {
             self.free_list.push(ptr.slot());
@@ -577,6 +575,7 @@ impl ThreadState {
 }
 
 // Make asm generate for the function.
+/*
 #[used]
 static INTERACT_ANN: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
     for (l, r) in core::iter::zip(l, r) {
@@ -593,6 +592,19 @@ static INTERACT_COM: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) =
     }
     interact_com_batch::<256>
 };
+#[used]
+static INTERACT_ERA: fn(&mut Net, ptr: Ptr) = |mut net, ptr| {
+    for _ in 0..2usize.pow(14) {
+        Net::interact_era(&mut net, ptr);
+    }
+};
+#[used]
+static RUN_ONCE: fn(&mut ThreadState, &mut Net) = |ts, net| {
+    for _ in 0..2usize.pow(14) {
+        ThreadState::run_once(ts, net)
+    }
+};
+*/
 
 #[cfg(test)]
 mod tests {
