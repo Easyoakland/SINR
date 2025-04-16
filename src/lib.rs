@@ -270,12 +270,6 @@ enum Either<A, B> {
 }
 
 impl Net {
-    pub fn root(&self) -> Ptr {
-        self.nodes[0].left
-    }
-    pub fn set_root(&mut self, root: Ptr) {
-        self.nodes[0].left = root
-    }
     /// Read the target of this pointer.
     // Not used by the runtime, so this doesn't need to be performant.
     pub fn read(&self, ptr: Ptr) -> Either<Node, Ptr> {
@@ -655,7 +649,6 @@ mod tests {
             Ptr::new(PtrTag::Con, Slot::new(5)),
             Ptr::new(PtrTag::Con, Slot::new(6)),
         ));
-        net.set_root(Ptr::new(PtrTag::Con, Slot::new(1)));
         net
     }
 
