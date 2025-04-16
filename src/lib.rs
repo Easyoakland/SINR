@@ -136,9 +136,8 @@ type Slot = u61;
 #[repr(transparent)]
 struct Ptr {
     tag: PtrTag,
-    // This could be bigger. Chose smaller number to give best opportunity for performance to not suffer.
-    // This means we can address 2^29 nodes or 2^32 bytes since each node is u64 in size.
-    // If `Ptr` was a u64 then 2^61 nodes or 2^67 bytes since each node is u128 in size, or make PtrTag 6 bits to get 2^64 bytes.
+    // A 32bit `Ptr` means we can address 2^29 nodes or 2^32 bytes since each node is u64 in size.
+    // A 64bit `Ptr` means we can address 2^61 nodes or 2^67 bytes since each node is u128 in size, or make PtrTag 6 bits to get 2^64 bytes.
     slot: Slot,
 }
 
