@@ -499,6 +499,83 @@ impl Net {
     }
 }
 
+/// State per thread performing reduction.
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ThreadState {
+    interactions_fol: u64,
+    interactions_ann: u64,
+    interactions_com: u64,
+    interactions_era: u64,
+    nodes_max: u64,
+    redexes_max: u64,
+}
+impl ThreadState {
+    /// Reduce available redexes of each type
+    pub fn run_once(&mut self, net: &mut Net) {
+        // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
+        const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(9);
+
+        self.nodes_max = self.nodes_max.max(net.nodes.len().try_into().unwrap());
+        self.redexes_max = self.redexes_max.max(
+            u64::try_from(
+                net.redexes
+                    .regular
+                    .iter()
+                    .map(|x| x.len())
+                    .chain([net.redexes.erase.len()])
+                    .sum::<usize>(),
+            )
+            .unwrap(),
+        );
+
+        for _ in 0..MAX_ITER_PER_ALLOC_TY {
+            let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() else {
+                break;
+            };
+            {
+                net.interact_com(l, r);
+                self.interactions_com += 1;
+            }
+        }
+
+        while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Ann as usize].pop() {
+            net.interact_ann(l, r);
+            self.interactions_ann += 1;
+        }
+
+        while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL0 as usize].pop() {
+            net.interact_follow(l, r);
+            self.interactions_fol += 1;
+        }
+        while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR0 as usize].pop() {
+            net.interact_follow(l, r);
+            self.interactions_fol += 1;
+        }
+        while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL1 as usize].pop() {
+            net.interact_follow(l, r);
+            self.interactions_fol += 1;
+        }
+        while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR1 as usize].pop() {
+            net.interact_follow(l, r);
+            self.interactions_fol += 1;
+        }
+
+        while let Some(ptr) = net.redexes.erase.pop() {
+            net.interact_era(ptr);
+            self.interactions_era += 1;
+        }
+    }
+    pub fn interactions(&self) -> u64 {
+        self.interactions_com
+            + self.interactions_ann
+            + self.interactions_era
+            + self.interactions_fol
+    }
+    pub fn non_follow_interactions(&self) -> u64 {
+        self.interactions_com + self.interactions_ann + self.interactions_era
+    }
+}
+
 // Make asm generate for the function.
 #[used]
 static INTERACT_ANN: fn(&mut Net, left_ptr: [Ptr; 256], right_ptr: [Ptr; 256]) = |n, l, r| {
@@ -735,88 +812,42 @@ mod tests {
                 redex.pop();
             }
         }
-        eprintln!("page fault warmup finished");
+        eprintln!("page fault warmup finished\n");
 
         for _ in 0..100000 {
             infinite_reduction_net(&mut net);
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
-        let mut interactions_com = 0u64;
-        let mut interactions_ann = 0u64;
-        let mut interactions_fol = 0u64;
-        let mut interactions_era = 0u64;
-        let mut redexes_max = 0usize;
-        let mut nodes_max = 0usize;
         let start = std::time::Instant::now();
-        const ITERS: usize = 400000;
-        // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
-        const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(8);
-        for _ in 0..ITERS {
-            nodes_max = nodes_max.max(net.nodes.len());
-            redexes_max = redexes_max.max(net.redexes.regular.iter().flat_map(|x| &x.0).count());
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Ann as usize].pop() {
-                net.interact_ann(l, r);
-                interactions_ann += 1;
-            }
-
-            for _ in 0..MAX_ITER_PER_ALLOC_TY {
-                let Some(Redex(l, r)) = net.redexes.regular[RedexTy::Com as usize].pop() else {
-                    break;
-                };
-                {
-                    net.interact_com(l, r);
-                    interactions_com += 1;
-                }
-            }
-
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL0 as usize].pop() {
-                net.interact_follow(l, r);
-                interactions_fol += 1;
-            }
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR0 as usize].pop() {
-                net.interact_follow(l, r);
-                interactions_fol += 1;
-            }
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolL1 as usize].pop() {
-                net.interact_follow(l, r);
-                interactions_fol += 1;
-            }
-            while let Some(Redex(l, r)) = net.redexes.regular[RedexTy::FolR1 as usize].pop() {
-                net.interact_follow(l, r);
-                interactions_fol += 1;
-            }
-
-            while let Some(ptr) = net.redexes.erase.pop() {
-                net.interact_era(ptr);
-                interactions_era += 1;
-            }
+        let mut thread_state = ThreadState::default();
+        for _ in 0..400000 {
+            thread_state.run_once(&mut net);
         }
         let end = std::time::Instant::now();
-        eprintln!("Max redexes {}", redexes_max);
-        eprintln!("Nodes max {}", nodes_max);
+        eprintln!("Max redexes: {}", thread_state.redexes_max);
+        eprintln!("Nodes max: {}", thread_state.nodes_max);
+        eprintln!("Final free_list length: {}", net.free_list.len(),);
         eprintln!("Total time: {:?}", end - start);
-        let interactions =
-            interactions_ann + interactions_com + interactions_era + interactions_fol;
         eprintln!(
             "---\n\
-            total: {interactions}\n\
-            commute: {interactions_com}\n\
-            annihilate: {interactions_ann}\n\
-            erase: {interactions_era}\n\
-            follow: {interactions_fol}",
+            total: {}\n\
+            commute: {}\n\
+            annihilate: {}\n\
+            erase: {}\n\
+            follow: {}",
+            thread_state.interactions(),
+            thread_state.interactions_com,
+            thread_state.interactions_ann,
+            thread_state.interactions_era,
+            thread_state.interactions_fol,
         );
         eprintln!(
             "---\n\
             All MIPS: {}\n\
             Non-follow MIPS: {}",
-            interactions as f32 / (end.duration_since(start)).as_micros() as f32,
-            (interactions - interactions_fol) as f32
+            thread_state.interactions() as f32 / (end.duration_since(start)).as_micros() as f32,
+            thread_state.non_follow_interactions() as f32
                 / (end.duration_since(start)).as_micros() as f32
-        );
-        eprintln!(
-            "len: {}, {:?}",
-            net.free_list.len(),
-            &net.free_list.0.get(0..100)
         );
     }
 

@@ -308,3 +308,42 @@ follow: 177599667
 All MIPS: 304.77518
 Non-follow MIPS: 130.61807
 ```
+
+
+Commit: XXX
+
+Delta: Use 64 bit pointers, limit commute interactions to 256 per loop, use [`ThreadState`]
+
+Device 1:
+```
+Max redexes: 101024
+Nodes max: 203073
+Final free_list length: 2048
+Total time: 5.6967864s
+---
+total: 1433598464
+commute: 204800000
+annihilate: 0
+erase: 409600000
+follow: 819198464
+---
+All MIPS: 251.65039
+Non-follow MIPS: 107.85029
+```
+
+Device 2:
+```
+Max redexes: 101024
+Nodes max: 203073
+Final free_list length: 2048
+Total time: 5.1821172s
+---
+total: 1433598464
+commute: 204800000
+annihilate: 0
+erase: 409600000
+follow: 819198464
+---
+All MIPS: 276.6434
+Non-follow MIPS: 118.561584
+```
