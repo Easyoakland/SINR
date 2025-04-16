@@ -7,8 +7,6 @@ use crate::{
     redex::{Redex, RedexTy, Redexes},
     unsafe_vec::UnsafeVec,
 };
-use bilge::prelude::*;
-use core::u32;
 
 pub type Nodes = UnsafeVec<Node>;
 pub type FreeList = UnsafeVec<Slot>;
@@ -62,8 +60,8 @@ impl Net {
         self.free_list.pop().unwrap_or_else(|| {
             let res = self.nodes.len();
             self.nodes.push(Node::default());
-            uassert!(res <= u32::MAX as usize); // prevent check on feature=unsafe
-            uassert!(res <= <Slot as Bitsized>::MAX.value() as usize);
+            uassert!(res <= u64::MAX as usize); // prevent check on feature=unsafe
+            uassert!(res <= <Slot as bilge::Bitsized>::MAX.value() as usize);
             Slot::new(res.try_into().unwrap())
         })
     }
