@@ -867,7 +867,7 @@ mod tests {
     #[ignore = "bench"]
     fn spinlock_latency() {
         static A: AtomicU32 = AtomicU32::new(0);
-        const STORES: u32 = 1_000_000;
+        const STORES: u32 = 10_000_000;
         let spawn_thread = move |mod_: u32, incr_on: u32| {
             let mut it = 0;
             std::thread::spawn(move || loop {
@@ -879,6 +879,7 @@ mod tests {
                     A.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 }
                 it += 1;
+                core::hint::spin_loop();
             })
         };
         for n in 0..=(usize::from(std::thread::available_parallelism().unwrap())) {
