@@ -208,7 +208,7 @@ impl Net {
             self.free_list.push(right_ptr.slot());
         }
 
-        // Make new nodes and link their aux together so each has 1 out and 1 in.
+        // Make new nodes and link their aux together so each has 1 out and 1 in. No particular reason for 1 out and 1 in. Could be something else. I picked it because it's just nice and symmetric looking.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
         self.nodes[ll2.value() as usize] = Node {
             left: Ptr::new(PtrTag::LeftAux0, rl2),
