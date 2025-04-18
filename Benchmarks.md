@@ -348,7 +348,7 @@ All MIPS: 276.6434
 Non-follow MIPS: 118.561584
 ```
 
-Commit: XXX
+Commit: 0f3a6e45feb63980ea65f601432618e19367a61c
 
 Delta: Decrease comm interaction limit to 128 based on benchmark.
 
