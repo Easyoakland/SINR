@@ -27,7 +27,7 @@
 //! # Goals
 //! - [x] Basic interactions
 //! - [x] Single-threaded scalar implementation
-//! - [ ] Memory deallocation and reclamation.
+//! - [x] Memory deallocation and reclamation.
 //! - [x] Minimize branching using lookup tables
 //!     - This does not improve performance, and instead appears to decrease it. Remaining branching is very minimal.
 //! - [x] SIMD
