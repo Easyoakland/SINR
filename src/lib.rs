@@ -35,8 +35,11 @@
 //!     Consequently, SIMD is unlikely to be useful since that part is not SIMD-able. Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
 //! - [ ] Multiple threads
 //! - [ ] Parse net from text
+// # Safety
+// In various places unsafe things are done without using the `unsafe` keyword and instead conditioning on `feature="unsafe"` and detecting the unsafe and panic-ing if not `(feature="unsafe")`. This will be changed after the design is more finalized.
 
 #![feature(get_disjoint_mut_helpers)]
+#![feature(unsafe_cell_access)]
 #![allow(dead_code)] // TODO remove
 
 mod builder;
@@ -89,7 +92,7 @@ mod tests {
     use crate::{
         macros::trace,
         net::{Net, ThreadState},
-        node::Node,
+        node::{Node, SharedNode},
         redex::{Redex, RedexTy},
     };
     use core::sync::atomic::AtomicU32;
@@ -97,14 +100,14 @@ mod tests {
     #[test]
     fn test_viz() {
         let mut net = Net::default();
-        net.nodes.push(Node {
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, Slot::new(1)),
-        });
-        net.nodes.push(Node {
+        }));
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, Slot::new(2)),
-        });
+        }));
         net.redexes.regular[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, Slot::new(1)),
             Ptr::new(PtrTag::Con, Slot::new(2)),
@@ -116,23 +119,23 @@ mod tests {
         let mut net = Net::default();
         let make_id = |net: &mut Net| {
             let slot = net.nodes.len();
-            net.nodes.push(Node {
+            net.nodes.push(SharedNode::new(Node {
                 left: Ptr::IN(),
                 right: Ptr::new(PtrTag::LeftAux0, Slot::new(slot.try_into().unwrap())),
-            });
+            }));
         };
         make_id(&mut net);
         make_id(&mut net);
         make_id(&mut net);
         make_id(&mut net);
-        net.nodes.push(Node {
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::new(PtrTag::Con, Slot::new(1)),
             right: Ptr::new(PtrTag::Con, Slot::new(2)),
-        });
-        net.nodes.push(Node {
+        }));
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::new(PtrTag::Con, Slot::new(3)),
             right: Ptr::new(PtrTag::Con, Slot::new(4)),
-        });
+        }));
         net.redexes.regular[RedexTy::Ann as usize].push(Redex(
             Ptr::new(PtrTag::Con, Slot::new(5)),
             Ptr::new(PtrTag::Con, Slot::new(6)),
@@ -160,22 +163,22 @@ mod tests {
         let mut net = Net::default();
         let make_id = |net: &mut Net| {
             let slot = net.nodes.len();
-            net.nodes.push(Node {
+            net.nodes.push(SharedNode::new(Node {
                 left: Ptr::IN(),
                 right: Ptr::new(PtrTag::LeftAux0, Slot::new(slot.try_into().unwrap())),
-            });
+            }));
         };
         make_id(&mut net);
         make_id(&mut net);
         make_id(&mut net);
-        net.nodes.push(Node {
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::ERA_0(),
             right: Ptr::new(PtrTag::Con, Slot::new(1)),
-        });
-        net.nodes.push(Node {
+        }));
+        net.nodes.push(SharedNode::new(Node {
             left: Ptr::new(PtrTag::Con, Slot::new(2)),
             right: Ptr::new(PtrTag::Con, Slot::new(3)),
-        });
+        }));
         net.redexes.regular[RedexTy::Com as usize].push(Redex(
             Ptr::new(PtrTag::Con, Slot::new(4)),
             Ptr::new(PtrTag::Dup, Slot::new(5)),
@@ -242,7 +245,7 @@ mod tests {
         trace!(file "13.dot",; viz::mem_to_dot(&net));
         eprintln!("13 {:?}", net.free_list);
         let p = net.redexes.erase.pop().unwrap();
-        net.interact_era(dbg!(p));
+        net.interact_era(p);
         trace!(file "14.dot",; viz::mem_to_dot(&net));
         eprintln!("14 {:?}", net.free_list);
         let Redex(l, r) = net.redexes.regular[RedexTy::FolR0 as usize].pop().unwrap();
@@ -273,14 +276,14 @@ mod tests {
 
     fn infinite_reduction_net(net: &mut Net) {
         let (n1, n2) = net.alloc_node2();
-        net.nodes[n1.value() as usize] = Node {
+        net.nodes[n1.value() as usize] = SharedNode::new(Node {
             left: Ptr::ERA_0(),
             right: Ptr::new(PtrTag::RightAux0, n2),
-        };
-        net.nodes[n2.value() as usize] = Node {
+        });
+        net.nodes[n2.value() as usize] = SharedNode::new(Node {
             left: Ptr::ERA_0(),
             right: Ptr::IN(),
-        };
+        });
         net.redexes.regular[RedexTy::Com as usize]
             .push(Redex(Ptr::new(PtrTag::Dup, n1), Ptr::new(PtrTag::Con, n2)));
     }
@@ -292,7 +295,7 @@ mod tests {
 
         // Force page faults now so they don't happen while benchmarking.
         for _ in 0..100000000 {
-            net.nodes.push(Node::default());
+            net.nodes.push(SharedNode::new(Node::default()));
         }
         for _ in 0..100000000 {
             net.nodes.pop();
@@ -386,5 +389,28 @@ mod tests {
             );
             A.store(0, core::sync::atomic::Ordering::Relaxed)
         }
+    }
+    #[test]
+    #[should_panic]
+    #[cfg(not(feature = "unsafe"))]
+    fn ub_detect_test() {
+        let mut net = Net::default();
+        infinite_reduction_net(&mut net);
+        let mut a = net.nodes[0].get();
+        let mut b = net.nodes[0].get();
+        dbg!(&mut *a, &mut *b);
+    }
+    #[test]
+    fn no_ub_detect_test() {
+        let mut net = Net::default();
+        infinite_reduction_net(&mut net);
+        {
+            let mut a = net.nodes[0].get();
+            dbg!(&mut *a);
+        }
+        {
+            let mut b = net.nodes[0].get();
+            dbg!(&mut *b)
+        };
     }
 }

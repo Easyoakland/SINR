@@ -3,12 +3,12 @@
 use crate::{
     left_right::LeftRight,
     macros::{uassert, uunreachable},
-    node::{Node, Ptr, PtrTag, Slot},
+    node::{Node, Ptr, PtrTag, SharedNode, Slot},
     redex::{Redex, RedexTy, Redexes},
     unsafe_vec::UnsafeVec,
 };
 
-pub type Nodes = UnsafeVec<Node>;
+pub type Nodes = UnsafeVec<SharedNode>;
 pub type FreeList = UnsafeVec<Slot>;
 #[derive(Debug, Clone)]
 pub struct Net {
@@ -22,7 +22,7 @@ impl Default for Net {
         let mut net = Self {
             // The first slot can't be pointed towards since slot 0 is an invalid slot id.
             // Can, however, use slot 0 to point towards something, e.g., the root of the net.
-            nodes: UnsafeVec(vec![Node::EMP()]),
+            nodes: UnsafeVec(vec![SharedNode::new(Node::EMP())]),
             redexes: Default::default(),
             free_list: UnsafeVec(Vec::new()),
         };
@@ -49,9 +49,15 @@ impl Net {
     // Not used by the runtime, so this doesn't need to be performant.
     pub fn read(&self, ptr: Ptr) -> Either<Node, Ptr> {
         match ptr.tag() {
-            PtrTag::LeftAux0 | PtrTag::LeftAux1 => Either::B(self.nodes[ptr.slot_usize()].left),
-            PtrTag::RightAux0 | PtrTag::RightAux1 => Either::B(self.nodes[ptr.slot_usize()].right),
-            PtrTag::Era | PtrTag::Con | PtrTag::Dup => Either::A(self.nodes[ptr.slot_usize()]),
+            PtrTag::LeftAux0 | PtrTag::LeftAux1 => {
+                Either::B(self.nodes[ptr.slot_usize()].get().left)
+            }
+            PtrTag::RightAux0 | PtrTag::RightAux1 => {
+                Either::B(self.nodes[ptr.slot_usize()].get().right)
+            }
+            PtrTag::Era | PtrTag::Con | PtrTag::Dup => {
+                Either::A(*self.nodes[ptr.slot_usize()].get())
+            }
             PtrTag::_Unused => uunreachable!(),
         }
     }
@@ -59,7 +65,7 @@ impl Net {
     pub fn alloc_node(&mut self) -> Slot {
         self.free_list.pop().unwrap_or_else(|| {
             let res = self.nodes.len();
-            self.nodes.push(Node::default());
+            self.nodes.push(SharedNode::new(Node::default()));
             uassert!(res <= u64::MAX as usize); // prevent check on feature=unsafe
             uassert!(res <= <Slot as bilge::Bitsized>::MAX.value() as usize);
             Slot::new(res.try_into().unwrap())
@@ -145,6 +151,7 @@ impl Net {
         let l_idx = left_ptr.slot_usize();
         let r_idx = right_ptr.slot_usize();
         let [left, right] = self.nodes.get_disjoint_mut([l_idx, r_idx]);
+        let [left, right] = [&mut *left.get(), &mut *right.get()];
         let (ll, lr) = (&mut left.left, &mut left.right);
         let (rl, rr) = (&mut right.left, &mut right.right);
 
@@ -186,59 +193,64 @@ impl Net {
     pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
         let (ll2, lr2, rl2, rr2) = self.alloc_node4();
 
-        let left_idx = left_ptr.slot_usize();
-        let right_idx = right_ptr.slot_usize();
-        let [left, right] = self.nodes.get_disjoint_mut([left_idx, right_idx]);
-        let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
-        let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
+        {
+            let left_idx = left_ptr.slot_usize();
+            let right_idx = right_ptr.slot_usize();
+            let [left, right] = self.nodes.get_disjoint_mut([left_idx, right_idx]);
+            let [left, right] = [&mut *left.get(), &mut *right.get()];
+            let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
+            let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
 
-        // ll2 and lr2 are now of type rt
-        // rl2 and rr2 are now of type lt
-        // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
-        uassert!(!rt.is_aux());
-        uassert!(!lt.is_aux());
-        Self::follow_target(&mut self.redexes, Ptr::new(rt, ll2), ll);
-        Self::follow_target(&mut self.redexes, Ptr::new(rt, lr2), lr);
-        Self::follow_target(&mut self.redexes, Ptr::new(lt, rl2), rl);
-        Self::follow_target(&mut self.redexes, Ptr::new(lt, rr2), rr);
-        if *left == Node::EMP() {
-            self.free_list.push(left_ptr.slot());
-        }
-        if *right == Node::EMP() {
-            self.free_list.push(right_ptr.slot());
+            // ll2 and lr2 are now of type rt
+            // rl2 and rr2 are now of type lt
+            // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
+            uassert!(!rt.is_aux());
+            uassert!(!lt.is_aux());
+            Self::follow_target(&mut self.redexes, Ptr::new(rt, ll2), ll);
+            Self::follow_target(&mut self.redexes, Ptr::new(rt, lr2), lr);
+            Self::follow_target(&mut self.redexes, Ptr::new(lt, rl2), rl);
+            Self::follow_target(&mut self.redexes, Ptr::new(lt, rr2), rr);
+            if *left == Node::EMP() {
+                self.free_list.push(left_ptr.slot());
+            }
+            if *right == Node::EMP() {
+                self.free_list.push(right_ptr.slot());
+            }
         }
 
         // Make new nodes and link their aux together so each has 1 out and 1 in. No particular reason for 1 out and 1 in. Could be something else. I picked it because it's just nice and symmetric looking.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
-        self.nodes[ll2.value() as usize] = Node {
+        self.nodes[ll2.value() as usize] = SharedNode::new(Node {
             left: Ptr::new(PtrTag::LeftAux0, rl2),
             right: Ptr::IN(),
-        };
-        self.nodes[lr2.value() as usize] = Node {
+        });
+        self.nodes[lr2.value() as usize] = SharedNode::new(Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::RightAux0, rr2),
-        };
-        self.nodes[rl2.value() as usize] = Node {
+        });
+        self.nodes[rl2.value() as usize] = SharedNode::new(Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, lr2),
-        };
-        self.nodes[rr2.value() as usize] = Node {
+        });
+        self.nodes[rr2.value() as usize] = SharedNode::new(Node {
             left: Ptr::new(PtrTag::RightAux0, ll2),
             right: Ptr::IN(),
-        };
+        });
     }
 
     /// Interact a redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
     pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
         uassert!(right.tag().is_aux());
 
-        let right_node = &mut self.nodes[right.slot_usize()];
-        let target = match right.tag().aux_side() {
-            LeftRight::Left => &mut right_node.left,
-            LeftRight::Right => &mut right_node.right,
-        };
+        let right_node = &mut *self.nodes[right.slot_usize()].get();
+        {
+            let target = match right.tag().aux_side() {
+                LeftRight::Left => &mut right_node.left,
+                LeftRight::Right => &mut right_node.right,
+            };
 
-        Self::follow_target(&mut self.redexes, left, target);
+            Self::follow_target(&mut self.redexes, left, target);
+        }
         if *right_node == Node::EMP() {
             self.free_list.push(right.slot());
         }
@@ -250,7 +262,7 @@ impl Net {
     /// On the positive side, this might speed things up and means that many erase nodes don't actually have to be stored in new slots of the net.
     pub fn interact_era(&mut self, ptr: Ptr) {
         let node_idx = ptr.slot_usize();
-        let node = &mut self.nodes[node_idx];
+        let node = &mut *self.nodes[node_idx].get();
 
         if node.left != Ptr::EMP() {
             Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left);

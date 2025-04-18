@@ -62,6 +62,7 @@ fn mem_to_graph(net: &Net) -> VizGraph {
     let mut visited_from_to = HashSet::<((Slot, LeftRight), Ptr)>::new();
     let mut to_visit = vec![];
     for (i, node) in net.nodes.0.iter().enumerate() {
+        let node = node.get();
         graph.add_node(format!("{}", i));
         if node.left == Ptr::EMP() && node.right == Ptr::EMP() {
             empty.push(i);

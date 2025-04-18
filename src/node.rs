@@ -2,6 +2,7 @@
 
 use crate::{left_right::LeftRight, uassert};
 use bilge::prelude::*;
+use core::ops::{Deref, DerefMut};
 
 #[bilge::bitsize(3)]
 #[derive(
@@ -137,4 +138,84 @@ impl Node {
         left: Ptr::EMP(),
         right: Ptr::EMP(),
     };
+}
+
+#[derive(Default, Debug)]
+pub struct SharedNode {
+    #[cfg(not(feature = "unsafe"))]
+    inner: std::sync::Mutex<Node>,
+    #[cfg(feature = "unsafe")]
+    inner: core::cell::UnsafeCell<Node>,
+}
+impl Clone for SharedNode {
+    fn clone(&self) -> Self {
+        Self::clone_from_ref(&self.get())
+    }
+}
+
+// Safety: With `feature=unsafe` the usage of the stages in the net should prevent any races.
+// Otherwise, races are detected and panic.
+#[cfg(feature = "unsafe")]
+unsafe impl Sync for SharedNode {}
+#[cfg(feature = "unsafe")]
+unsafe impl Send for SharedNode {}
+
+impl SharedNode {
+    pub fn new(node: Node) -> Self {
+        #[cfg(not(feature = "unsafe"))]
+        {
+            Self {
+                inner: std::sync::Mutex::new(node),
+            }
+        }
+        #[cfg(feature = "unsafe")]
+        {
+            Self {
+                inner: core::cell::UnsafeCell::new(node),
+            }
+        }
+    }
+    pub fn clone_from_ref(shared_node_ref: &SharedNodeRef<'_>) -> Self {
+        Self::new(shared_node_ref.inner.clone())
+    }
+    /// Get a unique reference to the shared inner [`Node`].
+    /// # Safety
+    /// It is UB to use any method on [`SharedNode`] while the [`SharedNodeRef`] is not dropped.
+    pub fn get(&self) -> SharedNodeRef<'_> {
+        #[cfg(not(feature = "unsafe"))]
+        {
+            SharedNodeRef {
+                inner: self
+                    .inner
+                    .try_lock()
+                    .expect("shared nodes should never be used more than once"),
+            }
+        }
+        #[cfg(feature = "unsafe")]
+        {
+            SharedNodeRef {
+                // Safety: caller enforced uniqueness.
+                inner: unsafe { self.inner.as_mut_unchecked() },
+            }
+        }
+    }
+}
+
+pub struct SharedNodeRef<'a> {
+    #[cfg(feature = "unsafe")]
+    inner: &'a mut Node,
+    #[cfg(not(feature = "unsafe"))]
+    inner: std::sync::MutexGuard<'a, Node>,
+}
+impl Deref for SharedNodeRef<'_> {
+    type Target = Node;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
+}
+impl DerefMut for SharedNodeRef<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.inner
+    }
 }
