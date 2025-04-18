@@ -312,7 +312,7 @@ Non-follow MIPS: 130.61807
 
 Commit: bc17e17d4aca29144d36c6024cb4f0d5f6b5597f
 
-Delta: Use 64 bit pointers, limit commute interactions to 256 per loop, use [`ThreadState`]
+Delta: Use 64 bit pointers, limit commute interactions to 512 per loop, use [`ThreadState`]
 
 Device 1:
 ```
@@ -346,4 +346,42 @@ follow: 819198464
 ---
 All MIPS: 276.6434
 Non-follow MIPS: 118.561584
+```
+
+Commit: XXX
+
+Delta: Decrease comm interaction limit to 128 based on benchmark.
+
+Device 1:
+```
+Max redexes: 100256
+Nodes max: 200769
+Final free_list length: 512
+Total time: 1.3840124s
+---
+total: 358399616
+commute: 51200000
+annihilate: 0
+erase: 102400000
+follow: 204799616
+---
+All MIPS: 258.957
+Non-follow MIPS: 110.9817
+```
+
+Device 2:
+```
+Max redexes: 100256
+Nodes max: 200769
+Final free_list length: 512
+Total time: 1.1411338s
+---
+total: 358399616
+commute: 51200000
+annihilate: 0
+erase: 102400000
+follow: 204799616
+---
+All MIPS: 314.0735
+Non-follow MIPS: 134.60307
 ```

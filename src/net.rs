@@ -278,7 +278,11 @@ impl ThreadState {
     /// Reduce available redexes of each type
     pub fn run_once(&mut self, net: &mut Net) {
         // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
-        const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(9);
+        // TODO perf: tune this value. Bigger means less stage syncs and more friendly to branch prediction, less means better cache locality.
+        // Looks like single-threaded perf gets worse for big nets at < 2^3 and > 2^7 with a 64KB/core L1 cache. I suspect the optimal number will depend on cache sizes.
+        // It might be worth changing this dynamically depending on current number of redexes.
+        // It would be pretty cool to have this auto-tune if that turns out to be case case.
+        const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(7);
 
         self.nodes_max = self.nodes_max.max(net.nodes.len().try_into().unwrap());
         self.redexes_max = self.redexes_max.max(
