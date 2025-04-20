@@ -44,14 +44,6 @@ impl<T> UnsafeVec<T> {
     }
     #[inline]
     pub fn push(&mut self, value: T) {
-        // #[cfg(all(feature = "unsafe", test))]
-        // if self.0.len() > 1000000000 {
-        //     dbg!(self.0.len(), self.0.capacity());
-        // }
-        // #[cfg(all(feature = "unsafe", feature = "prealloc"))]
-        // if self.0.len() == self.0.capacity() {
-        //     unsafe { core::hint::unreachable_unchecked() }
-        // }
         #[cfg(feature = "prealloc")]
         crate::macros::uassert!(self.0.len() < self.0.capacity());
         self.0.push(value);
