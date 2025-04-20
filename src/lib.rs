@@ -323,15 +323,39 @@ mod tests {
             local.0.extend(global.0.drain(..global.len().min(2048)));
         }
         let net = RwLock::new(net);
+        let mut nodes_max = 0u64;
+        let mut redexes_max = 0u64;
         let start = std::time::Instant::now();
         for _ in 0..400000 {
             thread_state.run_once(&net);
+
+            let net = net.read();
+            nodes_max = nodes_max.max(
+                [thread_state.local_net.nodes.len(), net.nodes.len()]
+                    .into_iter()
+                    .sum::<usize>()
+                    .try_into()
+                    .unwrap(),
+            );
+            redexes_max = redexes_max.max(
+                [
+                    thread_state.local_net.active_redexes(),
+                    net.active_redexes(),
+                ]
+                .into_iter()
+                .sum::<u64>(),
+            );
         }
         let end = std::time::Instant::now();
         let net = net.into_inner();
-        eprintln!("Max redexes: {}", thread_state.redexes_max);
-        eprintln!("Nodes max: {}", thread_state.nodes_max);
-        eprintln!("Final free_list length: {}", net.free_list.len(),);
+        eprintln!("Max redexes: {}", redexes_max);
+        eprintln!("Nodes max: {}", nodes_max);
+        eprintln!(
+            "Final free_list length: {}",
+            [thread_state.local_net.free_list.len(), net.free_list.len()]
+                .into_iter()
+                .sum::<usize>()
+        );
         eprintln!("Total time: {:?}", end - start);
         eprintln!(
             "---\n\

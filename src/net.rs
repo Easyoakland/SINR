@@ -330,6 +330,17 @@ impl Net {
             right,
         );
     }
+
+    pub fn active_redexes(&self) -> u64 {
+        self.redexes
+            .regular
+            .iter()
+            .map(|x| x.len())
+            .chain([self.redexes.erase.len()])
+            .sum::<usize>()
+            .try_into()
+            .unwrap()
+    }
 }
 
 /// State per thread performing reduction.
@@ -356,18 +367,7 @@ impl ThreadState {
         self.nodes_max = self
             .nodes_max
             .max(self.local_net.nodes.len().try_into().unwrap());
-        self.redexes_max = self.redexes_max.max(
-            u64::try_from(
-                self.local_net
-                    .redexes
-                    .regular
-                    .iter()
-                    .map(|x| x.len())
-                    .chain([self.local_net.redexes.erase.len()])
-                    .sum::<usize>(),
-            )
-            .unwrap(),
-        );
+        self.redexes_max = self.redexes_max.max(self.local_net.active_redexes());
 
         // TODO it should be possible to be lock-free when allocating new slots in the global net.
         // It should also be possible to be lock-free when sending or receiving new redexes.
