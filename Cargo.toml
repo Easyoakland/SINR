@@ -11,4 +11,5 @@ prealloc = []
 
 [dependencies]
 bilge = "0.2.0"
+parking_lot = "0.12.3"
 petgraph = "0.7.1"
