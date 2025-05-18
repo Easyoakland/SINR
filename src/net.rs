@@ -29,12 +29,12 @@ impl Default for Net {
         };
         #[cfg(feature = "prealloc")]
         {
-            net.nodes.0.reserve(100000000);
+            net.nodes.0.reserve(10000000);
             for redex in &mut net.redexes.regular {
-                redex.0.reserve(100000000)
+                redex.0.reserve(10000000)
             }
-            net.free_list.0.reserve(100000000);
-            net.redexes.erase.0.reserve(10000000);
+            net.free_list.0.reserve(10000000);
+            net.redexes.erase.0.reserve(1000000);
         }
         net
     }

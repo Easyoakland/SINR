@@ -295,10 +295,10 @@ mod tests {
         let mut net = Net::default();
 
         // Force page faults now so they don't happen while benchmarking.
-        for _ in 0..100000000 {
+        for _ in 0..10000000 {
             net.nodes.push(SharedNode::new(Node::default()));
         }
-        for _ in 0..100000000 {
+        for _ in 0..10000000 {
             net.nodes.pop();
         }
         for redex in &mut net.redexes.regular {
