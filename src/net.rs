@@ -356,6 +356,7 @@ pub struct ThreadState {
 }
 impl ThreadState {
     /// Reduce available redexes of each type
+    #[inline(always)] // perf: *massive* (over 50%) performance loss when this is not inlined.
     pub fn run_once(&mut self, global_net: &RwLock<Net>) {
         // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
         // TODO perf: tune this value. Bigger means less stage syncs and more friendly to branch prediction, less means better cache locality.
