@@ -147,30 +147,47 @@ impl Net {
         }
     }
 
-    pub fn interact_ann(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
+    pub fn interact_ann_with_parts(
+        redexes: &mut Redexes,
+        free_list: &mut FreeList,
+        nodes: &Nodes,
+        left_ptr: Ptr,
+        right_ptr: Ptr,
+    ) {
         let l_idx = left_ptr.slot_usize();
         let r_idx = right_ptr.slot_usize();
-        let [left, right] = self.nodes.get_disjoint_mut([l_idx, r_idx]);
+        uassert!(l_idx != r_idx);
+        let [left, right] = [&nodes[l_idx], &nodes[r_idx]];
         let [left, right] = [&mut *left.get(), &mut *right.get()];
         let (ll, lr) = (&mut left.left, &mut left.right);
         let (rl, rr) = (&mut right.left, &mut right.right);
 
-        Self::link_aux_ports(&mut self.redexes, ll, rl, {
+        Self::link_aux_ports(redexes, ll, rl, {
             let mut out = left_ptr;
             out.set_tag(PtrTag::LeftAux1);
             out
         });
-        Self::link_aux_ports(&mut self.redexes, lr, rr, {
+        Self::link_aux_ports(redexes, lr, rr, {
             let mut out = left_ptr;
             out.set_tag(PtrTag::RightAux1);
             out
         });
         if *left == Node::EMP() {
-            self.free_list.push(left_ptr.slot());
+            free_list.push(left_ptr.slot());
         }
         if *right == Node::EMP() {
-            self.free_list.push(right_ptr.slot());
+            free_list.push(right_ptr.slot());
         }
+    }
+    /// Convenience method using &mut access to the global net to perform an annihilate interaction.
+    pub fn interact_ann(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
+        Self::interact_ann_with_parts(
+            &mut self.redexes,
+            &mut self.free_list,
+            &self.nodes,
+            left_ptr,
+            right_ptr,
+        );
     }
 
     /// Follow target which is a &mut to an auxiliary port.
@@ -190,13 +207,21 @@ impl Net {
 
     // perf: I have no idea why but for some reason this function spends significant time on the prologue and epilogue and `inline(always)` (inline insufficient) noticeably improves performance.
     #[inline(always)]
-    pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
-        let (ll2, lr2, rl2, rr2) = self.alloc_node4();
+    pub fn interact_com_with_parts(
+        redexes: &mut Redexes,
+        free_list: &mut FreeList,
+        nodes: &Nodes,
+        allocated_slots: (Slot, Slot, Slot, Slot),
+        left_ptr: Ptr,
+        right_ptr: Ptr,
+    ) {
+        let (ll2, lr2, rl2, rr2) = allocated_slots;
 
         {
             let left_idx = left_ptr.slot_usize();
             let right_idx = right_ptr.slot_usize();
-            let [left, right] = self.nodes.get_disjoint_mut([left_idx, right_idx]);
+            uassert!(left_idx != right_idx);
+            let [left, right] = [&nodes[left_idx], &nodes[right_idx]];
             let [left, right] = [&mut *left.get(), &mut *right.get()];
             let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
             let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
@@ -206,73 +231,112 @@ impl Net {
             // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
             uassert!(!rt.is_aux());
             uassert!(!lt.is_aux());
-            Self::follow_target(&mut self.redexes, Ptr::new(rt, ll2), ll);
-            Self::follow_target(&mut self.redexes, Ptr::new(rt, lr2), lr);
-            Self::follow_target(&mut self.redexes, Ptr::new(lt, rl2), rl);
-            Self::follow_target(&mut self.redexes, Ptr::new(lt, rr2), rr);
+            Self::follow_target(redexes, Ptr::new(rt, ll2), ll);
+            Self::follow_target(redexes, Ptr::new(rt, lr2), lr);
+            Self::follow_target(redexes, Ptr::new(lt, rl2), rl);
+            Self::follow_target(redexes, Ptr::new(lt, rr2), rr);
             if *left == Node::EMP() {
-                self.free_list.push(left_ptr.slot());
+                free_list.push(left_ptr.slot());
             }
             if *right == Node::EMP() {
-                self.free_list.push(right_ptr.slot());
+                free_list.push(right_ptr.slot());
             }
         }
 
         // Make new nodes and link their aux together so each has 1 out and 1 in. No particular reason for 1 out and 1 in. Could be something else. I picked it because it's just nice and symmetric looking.
         // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
-        self.nodes[ll2.value() as usize] = SharedNode::new(Node {
+        *nodes[ll2.value() as usize].get() = Node {
             left: Ptr::new(PtrTag::LeftAux0, rl2),
             right: Ptr::IN(),
-        });
-        self.nodes[lr2.value() as usize] = SharedNode::new(Node {
+        };
+        *nodes[lr2.value() as usize].get() = Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::RightAux0, rr2),
-        });
-        self.nodes[rl2.value() as usize] = SharedNode::new(Node {
+        };
+        *nodes[rl2.value() as usize].get() = Node {
             left: Ptr::IN(),
             right: Ptr::new(PtrTag::LeftAux0, lr2),
-        });
-        self.nodes[rr2.value() as usize] = SharedNode::new(Node {
+        };
+        *nodes[rr2.value() as usize].get() = Node {
             left: Ptr::new(PtrTag::RightAux0, ll2),
             right: Ptr::IN(),
-        });
+        };
+    }
+
+    /// Convenience method using &mut access to the global net to perform a commute interaction.
+    #[inline(always)]
+    pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
+        let slots = self.alloc_node4();
+        Self::interact_com_with_parts(
+            &mut self.redexes,
+            &mut self.free_list,
+            &self.nodes,
+            slots,
+            left_ptr,
+            right_ptr,
+        );
     }
 
     /// Interact a redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
-    pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
+    pub fn interact_follow_with_parts(
+        free_list: &mut FreeList,
+        redexes: &mut Redexes,
+        nodes: &Nodes,
+        left: Ptr,
+        right: Ptr,
+    ) {
         uassert!(right.tag().is_aux());
 
-        let right_node = &mut *self.nodes[right.slot_usize()].get();
+        let right_node = &mut *nodes[right.slot_usize()].get();
         {
             let target = match right.tag().aux_side() {
                 LeftRight::Left => &mut right_node.left,
                 LeftRight::Right => &mut right_node.right,
             };
 
-            Self::follow_target(&mut self.redexes, left, target);
+            Self::follow_target(redexes, left, target);
         }
         if *right_node == Node::EMP() {
-            self.free_list.push(right.slot());
+            free_list.push(right.slot());
         }
+    }
+    /// Convenience method using &mut access to the global net to perform a follow interaction.
+    pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
+        Self::interact_follow_with_parts(
+            &mut self.free_list,
+            &mut self.redexes,
+            &self.nodes,
+            left,
+            right,
+        );
     }
 
     /// Erase the node pointed to by `Ptr`
     ///
     /// Erasers need a unique interaction distinct from annihilate because vicious circles of wires can be created if using the annihilate interaction to erase things.
     /// On the positive side, this might speed things up and means that many erase nodes don't actually have to be stored in new slots of the net.
-    pub fn interact_era(&mut self, ptr: Ptr) {
+    pub fn interact_era_with_parts(
+        redexes: &mut Redexes,
+        free_list: &mut FreeList,
+        nodes: &Nodes,
+        ptr: Ptr,
+    ) {
         let node_idx = ptr.slot_usize();
-        let node = &mut *self.nodes[node_idx].get();
+        let node = &mut *nodes[node_idx].get();
 
         if node.left != Ptr::EMP() {
-            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.left);
+            Self::follow_target(redexes, Ptr::ERA_0(), &mut node.left);
         };
         if node.right != Ptr::EMP() {
-            Self::follow_target(&mut self.redexes, Ptr::ERA_0(), &mut node.right);
+            Self::follow_target(redexes, Ptr::ERA_0(), &mut node.right);
         };
         if *node == Node::EMP() {
-            self.free_list.push(ptr.slot());
+            free_list.push(ptr.slot());
         }
+    }
+    /// Convenience method using &mut access to the global net to perform an erase interaction.
+    pub fn interact_era(&mut self, ptr: Ptr) {
+        Self::interact_era_with_parts(&mut self.redexes, &mut self.free_list, &self.nodes, ptr);
     }
 }
 

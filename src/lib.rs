@@ -314,8 +314,8 @@ mod tests {
             infinite_reduction_net(&mut net);
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
-        let start = std::time::Instant::now();
         let mut thread_state = ThreadState::default();
+        let start = std::time::Instant::now();
         for _ in 0..400000 {
             thread_state.run_once(&mut net);
         }
