@@ -365,6 +365,12 @@ impl ThreadState {
         // It would be pretty cool to have this auto-tune if that turns out to be case case.
         const MAX_ITER_PER_ALLOC_TY: usize = 2usize.pow(7);
 
+        // Threshold below which redexes should be injected from the global net into the local net.
+        const STEAL_GLOBAL_THRESH: u64 = 2u64.pow(10);
+
+        // Threshold above which redexes should be injected from the local net into the global net.
+        const PUSH_GLOBAL_THRESH: u64 = 2u64.pow(12);
+
         self.nodes_max = self
             .nodes_max
             .max(self.local_net.nodes.len().try_into().unwrap());
@@ -373,6 +379,39 @@ impl ThreadState {
         // TODO it should be possible to be lock-free when allocating new slots in the global net.
         // It should also be possible to be lock-free when sending or receiving new redexes.
         // TODO benchmark if contention becomes an issue in which case that might help.
+
+        // Take redexes from the global net if local net doesn't have enough.
+        if self.local_net.active_redexes() < STEAL_GLOBAL_THRESH {
+            let mut global_net = global_net.write();
+            let mut to_steal = STEAL_GLOBAL_THRESH as usize;
+            for (local, global) in core::iter::zip(
+                &mut self.local_net.redexes.regular,
+                &mut global_net.redexes.regular,
+            ) {
+                local.0.extend(global.0.drain(..global.len().min(to_steal)));
+                to_steal -= global.len().min(to_steal);
+            }
+            self.local_net.redexes.erase.0.extend({
+                let global = &mut global_net.redexes.erase;
+                global.0.drain(..global.len().min(to_steal))
+            });
+        }
+        // Push redexes to the global net.
+        else if self.local_net.active_redexes() > PUSH_GLOBAL_THRESH {
+            let mut global_net = global_net.write();
+            // TODO perf: test pushing commute first
+
+            for (local, global) in core::iter::zip(
+                &mut self.local_net.redexes.regular,
+                &mut global_net.redexes.regular,
+            ) {
+                global.0.extend(local.0.drain(..(local.len() / 2)));
+            }
+            global_net.redexes.erase.0.extend({
+                let local = &mut self.local_net.redexes.erase;
+                local.0.drain(..(local.len() / 2))
+            })
+        }
 
         // Make sure that the local net has sufficient free nodes.
         if self.local_net.free_list.len()
