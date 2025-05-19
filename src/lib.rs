@@ -316,37 +316,93 @@ mod tests {
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
         let mut thread_state = ThreadState::default();
-        for (local, global) in core::iter::zip(
-            &mut thread_state.local_net.redexes.regular,
-            &mut net.redexes.regular,
-        ) {
-            local.0.extend(global.0.drain(..global.len().min(2048)));
-        }
+        let mut thread_state2: [_; 19] = core::array::from_fn(|_| ThreadState::default());
         let net = RwLock::new(net);
         let mut nodes_max = 0u64;
         let mut redexes_max = 0u64;
-        let start = std::time::Instant::now();
-        for _ in 0..400000 {
-            thread_state.run_once(&net);
+        let mut start = std::time::Instant::now();
 
-            let net = net.read();
-            nodes_max = nodes_max.max(
-                [thread_state.local_net.nodes.len(), net.nodes.len()]
-                    .into_iter()
-                    .sum::<usize>()
-                    .try_into()
-                    .unwrap(),
-            );
-            redexes_max = redexes_max.max(
-                [
-                    thread_state.local_net.active_redexes(),
-                    net.active_redexes(),
-                ]
-                .into_iter()
-                .sum::<u64>(),
-            );
-        }
-        let end = std::time::Instant::now();
+        let mut end = std::time::Instant::now();
+        let a = AtomicU32::new(0);
+        std::thread::scope(|s| {
+            let t2 = thread_state2
+                .get_disjoint_mut(core::array::from_fn::<_, 19, _>(|i| i))
+                .unwrap();
+
+            let t2 = t2.map(|thread_state2| {
+                let net = &net;
+                let a = &a;
+                s.spawn(move || {
+                    while a.load(core::sync::atomic::Ordering::Relaxed) == 0 {}
+                    for i in 0..(1000000u32) {
+                        // static C: core::sync::atomic::AtomicUsize =
+                        //     core::sync::atomic::AtomicUsize::new(0);
+                        // core::hint::black_box(net.read().redexes.erase.len());
+                        {
+                            // This seems to slow things down considerably.
+                            // Seems like syncronization costs of the lock is high even if everything is only reading.
+                            // TODO first thing to try: use a separate lock for each of the fields in the global net so nodes don't need a read lock to access nodes.
+                            // Doesn't bode well for costs of global sync.
+                            core::hint::black_box(&net.try_read())
+                        };
+                        // std::thread::sleep(core::time::Duration::from_micros(1));
+                        /* for x in &net.read().nodes.0[0..1]  */
+                        {
+                            // core::hint::black_box(C.load(
+                            //     // x.get().left.slot_usize(),
+                            //     core::sync::atomic::Ordering::Relaxed,
+                            // ));
+                            // core::hint::black_box(C.fetch_add(
+                            //     x.get().right.slot_usize(),
+                            //     core::sync::atomic::Ordering::Relaxed,
+                            // ));
+                        }
+                        // thread_state2.run_once(&net);
+                    }
+                })
+            });
+
+            for _ in 0..5 {
+                thread_state.run_once(&net);
+            }
+            a.store(1, core::sync::atomic::Ordering::SeqCst);
+            start = std::time::Instant::now();
+
+            for _ in 0..400000u32 {
+                thread_state.run_once(&net);
+
+                // let net = net.read();
+                // nodes_max = nodes_max.max(
+                //     [thread_state.local_net.nodes.len(), net.nodes.len()]
+                //         .into_iter()
+                //         .sum::<usize>()
+                //         .try_into()
+                //         .unwrap(),
+                // );
+                // redexes_max = redexes_max.max(
+                //     [
+                //         thread_state.local_net.active_redexes(),
+                //         net.active_redexes(),
+                //     ]
+                //     .into_iter()
+                //     .sum::<u64>(),
+                // );
+            }
+            // eprintln!("{:?}", {
+            //     let mut x = thread_state
+            //         .local_net
+            //         .redexes
+            //         .regular
+            //         .iter()
+            //         .flat_map(|x| x.0.iter().flat_map(|x| [x.0, x.1]))
+            //         .filter(|&x| x != Ptr::EMP() && x != Ptr::ERA_0() && x != Ptr::IN())
+            //         .collect::<Vec<_>>();
+            //     x.sort();
+            //     x
+            // });
+            end = std::time::Instant::now();
+            t2.map(|x| x.join().unwrap());
+        });
         let net = net.into_inner();
         eprintln!("Max redexes: {}", redexes_max);
         eprintln!("Nodes max: {}", nodes_max);
