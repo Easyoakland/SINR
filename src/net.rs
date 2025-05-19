@@ -45,6 +45,223 @@ pub enum Either<A, B> {
     B(B),
 }
 
+#[inline]
+pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
+    uassert!(left != Ptr::EMP());
+    uassert!(right != Ptr::EMP());
+    uassert!(left != Ptr::IN());
+    uassert!(right != Ptr::IN());
+    let lt = left.tag();
+    let rt = right.tag();
+    match (lt, rt) {
+        // If right is a follow.
+        // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
+        _ if (rt as u8) < 4 => {
+            let (redex, redex_ty) = (Redex::new(left, right), unsafe {
+                RedexTy::from_u8(rt as u8)
+            });
+            redexes.regular[redex_ty as usize].push(redex);
+        }
+        // If left is a follow.
+        // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
+        _ if (lt as u8) < 4 => {
+            let (redex, redex_ty) = (Redex::new(right, left), unsafe {
+                RedexTy::from_u8(lt as u8)
+            });
+            redexes.regular[redex_ty as usize].push(redex);
+        }
+        (PtrTag::Era, PtrTag::Era) => (),
+        (PtrTag::Era, _) => redexes.erase.push(right),
+        (_, PtrTag::Era) => redexes.erase.push(left),
+        _ if lt == rt => {
+            let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Ann);
+            redexes.regular[redex_ty as usize].push(redex);
+        }
+        _ => {
+            let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Com);
+            redexes.regular[redex_ty as usize].push(redex);
+        }
+    }
+}
+
+/// `ptr_to_fst` should point to `fst` with stage 1.
+/// # Note
+/// Either `fst` or `snd` may have been set to `EMP`. To free memory the node containing both should be checked.
+#[inline]
+pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
+    uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
+    let (fst_start_out, snd_start_out) = (*fst != Ptr::IN(), *snd != Ptr::IN());
+    // All cases either swap (heterogenous cases) or or don't care that they swap (homogenous cases).
+    // TODO perf: see if this is an anti-optimization.
+    core::mem::swap(fst, snd);
+    match (*fst == Ptr::IN(), *snd == Ptr::IN()) {
+        (true, true) => {
+            // This is the only reason there needs to be two stages for left and right instead of only 1 per left and right.
+            // The snd ptr should not be an `IN` anymore, and instead redirect (point) to the fst aux with stage1 to avoid a race.
+            *snd = ptr_to_fst;
+        }
+        (true, false) | (false, true) => {
+            // Already swapped
+        }
+        (false, false) => add_redex(redexes, *fst, *snd),
+    }
+    if fst_start_out {
+        *fst = Ptr::EMP();
+    }
+    if snd_start_out {
+        *snd = Ptr::EMP()
+    }
+}
+
+pub fn interact_ann(
+    redexes: &mut Redexes,
+    free_list: &mut FreeList,
+    nodes: &Nodes,
+    left_ptr: Ptr,
+    right_ptr: Ptr,
+) {
+    let l_idx = left_ptr.slot_usize();
+    let r_idx = right_ptr.slot_usize();
+    uassert!(l_idx != r_idx);
+    let [left, right] = [&nodes[l_idx], &nodes[r_idx]];
+    let [left, right] = [&mut *left.get(), &mut *right.get()];
+    let (ll, lr) = (&mut left.left, &mut left.right);
+    let (rl, rr) = (&mut right.left, &mut right.right);
+
+    link_aux_ports(redexes, ll, rl, {
+        let mut out = left_ptr;
+        out.set_tag(PtrTag::LeftAux1);
+        out
+    });
+    link_aux_ports(redexes, lr, rr, {
+        let mut out = left_ptr;
+        out.set_tag(PtrTag::RightAux1);
+        out
+    });
+    if *left == Node::EMP() {
+        free_list.push(left_ptr.slot());
+    }
+    if *right == Node::EMP() {
+        free_list.push(right_ptr.slot());
+    }
+}
+
+/// Follow target which is a &mut to an auxiliary port.
+/// Either it redirects to another port or it is a [`Ptr::IN()`]
+/// After following `source` is connected again.
+/// # Note
+/// `target` port might be `PtrTag::EMP()` after this. Check the node containing it to maybe free memory.
+#[inline]
+pub fn follow_target(redexes: &mut Redexes, source: Ptr, target: &mut Ptr) {
+    if *target == Ptr::IN() {
+        *target = source // redirect to the new port
+    } else {
+        add_redex(redexes, source, *target);
+        *target = Ptr::EMP()
+    }
+}
+
+/// Interact a redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
+pub fn interact_follow(
+    free_list: &mut FreeList,
+    redexes: &mut Redexes,
+    nodes: &Nodes,
+    left: Ptr,
+    right: Ptr,
+) {
+    uassert!(right.tag().is_aux());
+
+    let right_node = &mut *nodes[right.slot_usize()].get();
+    {
+        let target = match right.tag().aux_side() {
+            LeftRight::Left => &mut right_node.left,
+            LeftRight::Right => &mut right_node.right,
+        };
+
+        follow_target(redexes, left, target);
+    }
+    if *right_node == Node::EMP() {
+        free_list.push(right.slot());
+    }
+}
+
+/// Erase the node pointed to by `Ptr`
+///
+/// Erasers need a unique interaction distinct from annihilate because vicious circles of wires can be created if using the annihilate interaction to erase things.
+/// On the positive side, this might speed things up and means that many erase nodes don't actually have to be stored in new slots of the net.
+pub fn interact_era(redexes: &mut Redexes, free_list: &mut FreeList, nodes: &Nodes, ptr: Ptr) {
+    let node_idx = ptr.slot_usize();
+    let node = &mut *nodes[node_idx].get();
+
+    if node.left != Ptr::EMP() {
+        follow_target(redexes, Ptr::ERA_0(), &mut node.left);
+    };
+    if node.right != Ptr::EMP() {
+        follow_target(redexes, Ptr::ERA_0(), &mut node.right);
+    };
+    if *node == Node::EMP() {
+        free_list.push(ptr.slot());
+    }
+}
+
+// perf: I have no idea why but for some reason this function spends significant time on the prologue and epilogue and `inline(always)` (inline insufficient) noticeably improves performance.
+#[inline(always)]
+pub fn interact_com(
+    redexes: &mut Redexes,
+    free_list: &mut FreeList,
+    nodes: &Nodes,
+    allocated_slots: (Slot, Slot, Slot, Slot),
+    left_ptr: Ptr,
+    right_ptr: Ptr,
+) {
+    let (ll2, lr2, rl2, rr2) = allocated_slots;
+
+    {
+        let left_idx = left_ptr.slot_usize();
+        let right_idx = right_ptr.slot_usize();
+        uassert!(left_idx != right_idx);
+        let [left, right] = [&nodes[left_idx], &nodes[right_idx]];
+        let [left, right] = [&mut *left.get(), &mut *right.get()];
+        let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
+        let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
+
+        // ll2 and lr2 are now of type rt
+        // rl2 and rr2 are now of type lt
+        // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
+        uassert!(!rt.is_aux());
+        uassert!(!lt.is_aux());
+        follow_target(redexes, Ptr::new(rt, ll2), ll);
+        follow_target(redexes, Ptr::new(rt, lr2), lr);
+        follow_target(redexes, Ptr::new(lt, rl2), rl);
+        follow_target(redexes, Ptr::new(lt, rr2), rr);
+        if *left == Node::EMP() {
+            free_list.push(left_ptr.slot());
+        }
+        if *right == Node::EMP() {
+            free_list.push(right_ptr.slot());
+        }
+    }
+
+    // Make new nodes and link their aux together so each has 1 out and 1 in. No particular reason for 1 out and 1 in. Could be something else. I picked it because it's just nice and symmetric looking.
+    // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
+    *nodes[ll2.value() as usize].get() = Node {
+        left: Ptr::new(PtrTag::LeftAux0, rl2),
+        right: Ptr::IN(),
+    };
+    *nodes[lr2.value() as usize].get() = Node {
+        left: Ptr::IN(),
+        right: Ptr::new(PtrTag::RightAux0, rr2),
+    };
+    *nodes[rl2.value() as usize].get() = Node {
+        left: Ptr::IN(),
+        right: Ptr::new(PtrTag::LeftAux0, lr2),
+    };
+    *nodes[rr2.value() as usize].get() = Node {
+        left: Ptr::new(PtrTag::RightAux0, ll2),
+        right: Ptr::IN(),
+    };
+}
+
 impl Net {
     /// Read the target of this pointer.
     // Not used by the runtime, so this doesn't need to be performant.
@@ -81,223 +298,23 @@ impl Net {
         let ((a, b), (c, d)) = (self.alloc_node2(), self.alloc_node2());
         (a, b, c, d)
     }
-    #[inline]
-    pub fn add_redex(redexes: &mut Redexes, left: Ptr, right: Ptr) {
-        uassert!(left != Ptr::EMP());
-        uassert!(right != Ptr::EMP());
-        uassert!(left != Ptr::IN());
-        uassert!(right != Ptr::IN());
-        let lt = left.tag();
-        let rt = right.tag();
-        match (lt, rt) {
-            // If right is a follow.
-            // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
-            _ if (rt as u8) < 4 => {
-                let (redex, redex_ty) = (Redex::new(left, right), unsafe {
-                    RedexTy::from_u8(rt as u8)
-                });
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-            // If left is a follow.
-            // Safety: check in match that value is `< 4` which is `< RedexTy::LEN`.
-            _ if (lt as u8) < 4 => {
-                let (redex, redex_ty) = (Redex::new(right, left), unsafe {
-                    RedexTy::from_u8(lt as u8)
-                });
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-            (PtrTag::Era, PtrTag::Era) => (),
-            (PtrTag::Era, _) => redexes.erase.push(right),
-            (_, PtrTag::Era) => redexes.erase.push(left),
-            _ if lt == rt => {
-                let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Ann);
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-            _ => {
-                let (redex, redex_ty) = (Redex::new(left, right), RedexTy::Com);
-                redexes.regular[redex_ty as usize].push(redex);
-            }
-        }
-    }
-    /// `ptr_to_fst` should point to `fst` with stage 1.
-    /// # Note
-    /// Either `fst` or `snd` may have been set to `EMP`. To free memory the node containing both should be checked.
-    #[inline]
-    pub fn link_aux_ports(redexes: &mut Redexes, fst: &mut Ptr, snd: &mut Ptr, ptr_to_fst: Ptr) {
-        uassert!(ptr_to_fst.tag() == PtrTag::LeftAux1 || ptr_to_fst.tag() == PtrTag::RightAux1);
-        let (fst_start_out, snd_start_out) = (*fst != Ptr::IN(), *snd != Ptr::IN());
-        // All cases either swap (heterogenous cases) or or don't care that they swap (homogenous cases).
-        // TODO perf: see if this is an anti-optimization.
-        core::mem::swap(fst, snd);
-        match (*fst == Ptr::IN(), *snd == Ptr::IN()) {
-            (true, true) => {
-                // This is the only reason there needs to be two stages for left and right instead of only 1 per left and right.
-                // The snd ptr should not be an `IN` anymore, and instead redirect (point) to the fst aux with stage1 to avoid a race.
-                *snd = ptr_to_fst;
-            }
-            (true, false) | (false, true) => {
-                // Already swapped
-            }
-            (false, false) => Self::add_redex(redexes, *fst, *snd),
-        }
-        if fst_start_out {
-            *fst = Ptr::EMP();
-        }
-        if snd_start_out {
-            *snd = Ptr::EMP()
-        }
+
+    /// Convenience method using &mut access to the net to perform an annihilate interaction.
+    pub fn interact_ann(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
+        interact_ann(
+            &mut self.redexes,
+            &mut self.free_list,
+            &self.nodes,
+            left_ptr,
+            right_ptr,
+        );
     }
 
-    pub fn interact_ann(
-        redexes: &mut Redexes,
-        free_list: &mut FreeList,
-        nodes: &Nodes,
-        left_ptr: Ptr,
-        right_ptr: Ptr,
-    ) {
-        let l_idx = left_ptr.slot_usize();
-        let r_idx = right_ptr.slot_usize();
-        let [left, right] = [&nodes[l_idx], &nodes[r_idx]];
-        let [left, right] = [&mut *left.get(), &mut *right.get()];
-        let (ll, lr) = (&mut left.left, &mut left.right);
-        let (rl, rr) = (&mut right.left, &mut right.right);
-
-        Self::link_aux_ports(redexes, ll, rl, {
-            let mut out = left_ptr;
-            out.set_tag(PtrTag::LeftAux1);
-            out
-        });
-        Self::link_aux_ports(redexes, lr, rr, {
-            let mut out = left_ptr;
-            out.set_tag(PtrTag::RightAux1);
-            out
-        });
-        if *left == Node::EMP() {
-            free_list.push(left_ptr.slot());
-        }
-        if *right == Node::EMP() {
-            free_list.push(right_ptr.slot());
-        }
-    }
-
-    /// Follow target which is a &mut to an auxiliary port.
-    /// Either it redirects to another port or it is a [`Ptr::IN()`]
-    /// After following `source` is connected again.
-    /// # Note
-    /// `target` port might be `PtrTag::EMP()` after this. Check the node containing it to maybe free memory.
-    #[inline]
-    pub fn follow_target(redexes: &mut Redexes, source: Ptr, target: &mut Ptr) {
-        if *target == Ptr::IN() {
-            *target = source // redirect to the new port
-        } else {
-            Self::add_redex(redexes, source, *target);
-            *target = Ptr::EMP()
-        }
-    }
-
-    // perf: I have no idea why but for some reason this function spends significant time on the prologue and epilogue and `inline(always)` (inline insufficient) noticeably improves performance.
+    /// Convenience method using &mut access to the net to perform a commute interaction.
     #[inline(always)]
-    pub fn interact_com(
-        redexes: &mut Redexes,
-        free_list: &mut FreeList,
-        nodes: &Nodes,
-        allocated_slots: (Slot, Slot, Slot, Slot),
-        left_ptr: Ptr,
-        right_ptr: Ptr,
-    ) {
-        let (ll2, lr2, rl2, rr2) = allocated_slots;
-
-        {
-            let left_idx = left_ptr.slot_usize();
-            let right_idx = right_ptr.slot_usize();
-            let [left, right] = [&nodes[left_idx], &nodes[right_idx]];
-            let [left, right] = [&mut *left.get(), &mut *right.get()];
-            let (ll, lr, lt) = (&mut left.left, &mut left.right, left_ptr.tag());
-            let (rl, rr, rt) = (&mut right.left, &mut right.right, right_ptr.tag());
-
-            // ll2 and lr2 are now of type rt
-            // rl2 and rr2 are now of type lt
-            // Using the old auxiliary as the target and the new nodes' principal ports as sources, follow the targets.
-            uassert!(!rt.is_aux());
-            uassert!(!lt.is_aux());
-            Self::follow_target(redexes, Ptr::new(rt, ll2), ll);
-            Self::follow_target(redexes, Ptr::new(rt, lr2), lr);
-            Self::follow_target(redexes, Ptr::new(lt, rl2), rl);
-            Self::follow_target(redexes, Ptr::new(lt, rr2), rr);
-            if *left == Node::EMP() {
-                free_list.push(left_ptr.slot());
-            }
-            if *right == Node::EMP() {
-                free_list.push(right_ptr.slot());
-            }
-        }
-
-        // Make new nodes and link their aux together so each has 1 out and 1 in. No particular reason for 1 out and 1 in. Could be something else. I picked it because it's just nice and symmetric looking.
-        // All nodes start at stage 0 since handling left and right in separate stages is sufficient to avoid races here since no *port* has 2 incoming pointers, i.e., no node with 2 incoming pointers to same aux.
-        *nodes[ll2.value() as usize].get() = Node {
-            left: Ptr::new(PtrTag::LeftAux0, rl2),
-            right: Ptr::IN(),
-        };
-        *nodes[lr2.value() as usize].get() = Node {
-            left: Ptr::IN(),
-            right: Ptr::new(PtrTag::RightAux0, rr2),
-        };
-        *nodes[rl2.value() as usize].get() = Node {
-            left: Ptr::IN(),
-            right: Ptr::new(PtrTag::LeftAux0, lr2),
-        };
-        *nodes[rr2.value() as usize].get() = Node {
-            left: Ptr::new(PtrTag::RightAux0, ll2),
-            right: Ptr::IN(),
-        };
-    }
-
-    /// Interact a redex where the `right` `Ptr`'s target is not a primary port and instead is either a redirector or an auxiliary port.
-    pub fn interact_follow(
-        free_list: &mut FreeList,
-        redexes: &mut Redexes,
-        nodes: &Nodes,
-        left: Ptr,
-        right: Ptr,
-    ) {
-        uassert!(right.tag().is_aux());
-
-        let right_node = &mut *nodes[right.slot_usize()].get();
-        {
-            let target = match right.tag().aux_side() {
-                LeftRight::Left => &mut right_node.left,
-                LeftRight::Right => &mut right_node.right,
-            };
-
-            Self::follow_target(redexes, left, target);
-        }
-        if *right_node == Node::EMP() {
-            free_list.push(right.slot());
-        }
-    }
-
-    /// Erase the node pointed to by `Ptr`
-    ///
-    /// Erasers need a unique interaction distinct from annihilate because vicious circles of wires can be created if using the annihilate interaction to erase things.
-    /// On the positive side, this might speed things up and means that many erase nodes don't actually have to be stored in new slots of the net.
-    pub fn interact_era(redexes: &mut Redexes, free_list: &mut FreeList, nodes: &Nodes, ptr: Ptr) {
-        let node_idx = ptr.slot_usize();
-        let node = &mut *nodes[node_idx].get();
-
-        if node.left != Ptr::EMP() {
-            Self::follow_target(redexes, Ptr::ERA_0(), &mut node.left);
-        };
-        if node.right != Ptr::EMP() {
-            Self::follow_target(redexes, Ptr::ERA_0(), &mut node.right);
-        };
-        if *node == Node::EMP() {
-            free_list.push(ptr.slot());
-        }
-    }
-    /// Convenience method using &mut access to the global net to perform a commute interaction.
-    pub fn interact_com_global(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
+    pub fn interact_com(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
         let slots = self.alloc_node4();
-        Self::interact_com(
+        interact_com(
             &mut self.redexes,
             &mut self.free_list,
             &self.nodes,
@@ -306,29 +323,21 @@ impl Net {
             right_ptr,
         );
     }
-    /// Convenience method using &mut access to the global net to perform an annihilate interaction.
-    pub fn interact_ann_global(&mut self, left_ptr: Ptr, right_ptr: Ptr) {
-        Self::interact_ann(
-            &mut self.redexes,
-            &mut self.free_list,
-            &self.nodes,
-            left_ptr,
-            right_ptr,
-        );
-    }
-    /// Convenience method using &mut access to the global net to perform an erase interaction.
-    pub fn interact_era_global(&mut self, ptr: Ptr) {
-        Self::interact_era(&mut self.redexes, &mut self.free_list, &self.nodes, ptr);
-    }
-    /// Convenience method using &mut access to the global net to perform a follow interaction.
-    pub fn interact_follow_global(&mut self, left: Ptr, right: Ptr) {
-        Self::interact_follow(
+
+    /// Convenience method using &mut access to the net to perform a follow interaction.
+    pub fn interact_follow(&mut self, left: Ptr, right: Ptr) {
+        interact_follow(
             &mut self.free_list,
             &mut self.redexes,
             &self.nodes,
             left,
             right,
         );
+    }
+
+    /// Convenience method using &mut access to the net to perform an erase interaction.
+    pub fn interact_era(&mut self, ptr: Ptr) {
+        interact_era(&mut self.redexes, &mut self.free_list, &self.nodes, ptr);
     }
 
     pub fn active_redexes(&self) -> u64 {
@@ -442,7 +451,7 @@ impl ThreadState {
                     self.local_net.free_list.pop().unwrap(),
                     self.local_net.free_list.pop().unwrap(),
                 );
-                Net::interact_com(
+                interact_com(
                     &mut self.local_net.redexes,
                     &mut self.local_net.free_list,
                     &global_net_nodes,
@@ -455,7 +464,7 @@ impl ThreadState {
         }
 
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::Ann as usize].pop() {
-            Net::interact_ann(
+            interact_ann(
                 &mut self.local_net.redexes,
                 &mut self.local_net.free_list,
                 &global_net_nodes,
@@ -467,7 +476,7 @@ impl ThreadState {
 
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolL0 as usize].pop()
         {
-            Net::interact_follow(
+            interact_follow(
                 &mut self.local_net.free_list,
                 &mut self.local_net.redexes,
                 &global_net_nodes,
@@ -478,7 +487,7 @@ impl ThreadState {
         }
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolR0 as usize].pop()
         {
-            Net::interact_follow(
+            interact_follow(
                 &mut self.local_net.free_list,
                 &mut self.local_net.redexes,
                 &global_net_nodes,
@@ -489,7 +498,7 @@ impl ThreadState {
         }
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolL1 as usize].pop()
         {
-            Net::interact_follow(
+            interact_follow(
                 &mut self.local_net.free_list,
                 &mut self.local_net.redexes,
                 &global_net_nodes,
@@ -500,7 +509,7 @@ impl ThreadState {
         }
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolR1 as usize].pop()
         {
-            Net::interact_follow(
+            interact_follow(
                 &mut self.local_net.free_list,
                 &mut self.local_net.redexes,
                 &global_net_nodes,
@@ -511,7 +520,7 @@ impl ThreadState {
         }
 
         while let Some(ptr) = self.local_net.redexes.erase.pop() {
-            Net::interact_era(
+            interact_era(
                 &mut self.local_net.redexes,
                 &mut self.local_net.free_list,
                 &global_net_nodes,
