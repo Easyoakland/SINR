@@ -9,17 +9,18 @@ use std::sync::Arc;
 const STAGE_MASK: u8 = 0b1;
 const DISABLED_MASK: u8 = 0b10;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Inner {
     waiting: Vec<CachePadded<AtomicU8>>,
 }
 /// A [`Waiter`] allows a thread to [`wait`] until [`wait`] has been called on all sibling [`Waiter`]s, to implement a low-latency barrier.
 ///
 /// # Warning
-/// If the first [`Waiter`] returned by [`Waiter::new`] is dropped, future [`wait`]s by sibling [`Waiter`]s may panic or not complete.
+/// - If the first [`Waiter`] returned by [`Waiter::new`] is dropped, future [`wait`]s by sibling [`Waiter`]s may panic or not complete.
+/// - The [`Default`] impl makes a [`Waiter`] that is not part of a barrier and may panic on [`wait`].
 ///
 /// [`wait`]: Self::wait()
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Waiter {
     inner: Arc<Inner>,
     id: usize,
@@ -54,7 +55,7 @@ impl Waiter {
                 loop {
                     let val = slot.load(core::sync::atomic::Ordering::Relaxed);
                     // If the other thread has either transitioned to the next stage or is disabled don't have to wait for it any more.
-                    if (val & STAGE_MASK == new_val & STAGE_MASK) || (val & DISABLED_MASK != 0) {
+                    if (val & STAGE_MASK == new_val & STAGE_MASK) || val & DISABLED_MASK != 0 {
                         break;
                     };
                     // perf: Testing indicates that using [`std::thread::yield_now`] is slightly worse than [`core::hint::spin_loop`] in this branch.
@@ -78,7 +79,7 @@ impl Waiter {
                     break;
                 }
                 // The 0th thread should not be dropped when other Waiters are still waiting.
-                debug_assert_eq!(
+                assert_eq!(
                     val & DISABLED_MASK,
                     0,
                     "First Waiter dropped before call to `wait` resulting in a deadlock"
@@ -89,10 +90,23 @@ impl Waiter {
             }
         }
     }
+
+    /// Number of [`Waiter`] that are still active in this barrier.
+    pub fn len(&self) -> usize {
+        self.inner
+            .waiting
+            .iter()
+            .filter(|x| x.load(core::sync::atomic::Ordering::Relaxed) & DISABLED_MASK == 0)
+            .count()
+    }
 }
 impl Drop for Waiter {
     fn drop(&mut self) {
-        let my_slot = &self.inner.waiting[self.id];
+        let Some(my_slot) = &self.inner.waiting.get(self.id) else {
+            // Default impl has no waiters and vector is len 0.
+            debug_assert_eq!(self.inner.waiting.len(), 0);
+            return;
+        };
         let val = my_slot.load(core::sync::atomic::Ordering::Relaxed);
         // Disable this waiter on drop.
         my_slot.store(val | DISABLED_MASK, core::sync::atomic::Ordering::Release);
