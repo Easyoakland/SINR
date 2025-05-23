@@ -35,12 +35,16 @@
 //!     Consequently, SIMD is unlikely to be useful since that part is not SIMD-able. Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
 //! - [ ] Multiple threads
 //! - [ ] Parse net from text
+//!
+//! [`RedexTy`]: redex::RedexTy
+
 // # Safety
 // In various places unsafe things are done without using the `unsafe` keyword and instead conditioning on `feature="unsafe"` and detecting the unsafe and panic-ing if not `(feature="unsafe")`. This will be changed after the design is more finalized.
 
 #![feature(get_disjoint_mut_helpers)]
 #![feature(unsafe_cell_access)]
 #![allow(dead_code)] // TODO remove
+#![allow(rustdoc::private_intra_doc_links)]
 
 mod builder;
 mod left_right;
