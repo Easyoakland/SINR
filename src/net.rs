@@ -7,7 +7,9 @@ use crate::{
     redex::{Redex, RedexTy, Redexes},
     unsafe_vec::UnsafeVec,
 };
+use core::mem::ManuallyDrop;
 use parking_lot::RwLock;
+use rmw_free_barrier::Waiter;
 
 pub type Nodes = UnsafeVec<SharedNode>;
 pub type FreeList = UnsafeVec<Slot>;
@@ -38,6 +40,13 @@ impl Default for Net {
         }
         net
     }
+}
+
+#[derive(Debug, Default)]
+pub struct GlobalState {
+    pub nodes: RwLock<Nodes>,
+    pub redexes: RwLock<Redexes>,
+    pub free_list: RwLock<FreeList>,
 }
 
 pub enum Either<A, B> {
@@ -147,7 +156,7 @@ pub fn interact_ann(
 }
 
 /// Follow target which is a &mut to an auxiliary port.
-/// Either it redirects to another port or it is a [`Ptr::IN()`]
+/// Either it redirects to another port or it is a [`Ptr::IN`]
 /// After following `source` is connected again.
 /// # Note
 /// `target` port might be `PtrTag::EMP()` after this. Check the node containing it to maybe free memory.
@@ -262,6 +271,40 @@ pub fn interact_com(
     };
 }
 
+pub mod nodes {
+    use super::*;
+
+    /// Read the target of this pointer.
+    // Not used by the runtime, so this doesn't need to be performant.
+    pub fn read(nodes: &Nodes, ptr: Ptr) -> Either<Node, Ptr> {
+        match ptr.tag() {
+            PtrTag::LeftAux0 | PtrTag::LeftAux1 => Either::B(nodes[ptr.slot_usize()].get().left),
+            PtrTag::RightAux0 | PtrTag::RightAux1 => Either::B(nodes[ptr.slot_usize()].get().right),
+            PtrTag::Era | PtrTag::Con | PtrTag::Dup => Either::A(*nodes[ptr.slot_usize()].get()),
+            PtrTag::_Unused => uunreachable!(),
+        }
+    }
+    #[inline]
+    pub fn alloc_node(nodes: &mut Nodes, free_list: &mut FreeList) -> Slot {
+        free_list.pop().unwrap_or_else(|| {
+            let res = nodes.len();
+            nodes.push(SharedNode::new(Node::default()));
+            uassert!(res <= u64::MAX as usize); // prevent check on feature=unsafe
+            uassert!(res <= <Slot as bilge::Bitsized>::MAX.value() as usize);
+            Slot::new(res.try_into().unwrap())
+        })
+    }
+    #[inline]
+    pub fn alloc_node2(nodes: &mut Nodes, free_list: &mut FreeList) -> (Slot, Slot) {
+        (alloc_node(nodes, free_list), alloc_node(nodes, free_list))
+    }
+    #[inline]
+    pub fn alloc_node4(nodes: &mut Nodes, free_list: &mut FreeList) -> (Slot, Slot, Slot, Slot) {
+        let ((a, b), (c, d)) = (alloc_node2(nodes, free_list), alloc_node2(nodes, free_list));
+        (a, b, c, d)
+    }
+}
+
 impl Net {
     /// Read the target of this pointer.
     // Not used by the runtime, so this doesn't need to be performant.
@@ -341,19 +384,22 @@ impl Net {
     }
 
     pub fn active_redexes(&self) -> u64 {
-        self.redexes
-            .regular
-            .iter()
-            .map(|x| x.len())
-            .chain([self.redexes.erase.len()])
-            .sum::<usize>()
-            .try_into()
-            .unwrap()
+        active_redexes(&self.redexes)
     }
+}
+pub fn active_redexes(redexes: &Redexes) -> u64 {
+    redexes
+        .regular
+        .iter()
+        .map(|x| x.len())
+        .chain([redexes.erase.len()])
+        .sum::<usize>()
+        .try_into()
+        .unwrap()
 }
 
 /// State per thread performing reduction.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct ThreadState {
     pub interactions_fol: u64,
     pub interactions_ann: u64,
@@ -362,11 +408,24 @@ pub struct ThreadState {
     pub nodes_max: u64,
     pub redexes_max: u64,
     pub local_net: Net,
+    pub waiter: Waiter,
 }
 impl ThreadState {
+    pub fn new(waiter: Waiter) -> Self {
+        Self {
+            interactions_fol: Default::default(),
+            interactions_ann: Default::default(),
+            interactions_com: Default::default(),
+            interactions_era: Default::default(),
+            nodes_max: Default::default(),
+            redexes_max: Default::default(),
+            local_net: Default::default(),
+            waiter,
+        }
+    }
     /// Reduce available redexes of each type
     #[inline(always)] // perf: *massive* (over 50%) performance loss when this is not inlined.
-    pub fn run_once(&mut self, global_net: &RwLock<Net>) {
+    pub fn run_once(&mut self, global_net: &GlobalState) {
         // Limit the number of interactions per stage for all redex types which might allocate new nodes. This way we limit parallelism to avoid overflowing the data cache.
         // TODO perf: tune this value. Bigger means less stage syncs and more friendly to branch prediction, less means better cache locality.
         // Looks like single-threaded perf gets worse for big nets at < 2^3 and > 2^7 with a 64KB/core L1 cache. I suspect the optimal number will depend on cache sizes.
@@ -391,32 +450,32 @@ impl ThreadState {
 
         // Take redexes from the global net if local net doesn't have enough.
         if self.local_net.active_redexes() < STEAL_GLOBAL_THRESH {
-            let mut global_net = global_net.write();
+            let mut global_net_redexes = global_net.redexes.write();
             let mut to_steal = STEAL_GLOBAL_THRESH as usize;
             for (local, global) in core::iter::zip(
                 &mut self.local_net.redexes.regular,
-                &mut global_net.redexes.regular,
+                &mut global_net_redexes.regular,
             ) {
                 local.0.extend(global.0.drain(..global.len().min(to_steal)));
                 to_steal -= global.len().min(to_steal);
             }
             self.local_net.redexes.erase.0.extend({
-                let global = &mut global_net.redexes.erase;
+                let global = &mut global_net_redexes.erase;
                 global.0.drain(..global.len().min(to_steal))
             });
         }
         // Push redexes to the global net.
         else if self.local_net.active_redexes() > PUSH_GLOBAL_THRESH {
-            let mut global_net = global_net.write();
+            let mut global_net_redexes = global_net.redexes.write();
             // TODO perf: test pushing commute first
 
             for (local, global) in core::iter::zip(
                 &mut self.local_net.redexes.regular,
-                &mut global_net.redexes.regular,
+                &mut global_net_redexes.regular,
             ) {
                 global.0.extend(local.0.drain(..(local.len() / 2)));
             }
-            global_net.redexes.erase.0.extend({
+            global_net_redexes.erase.0.extend({
                 let local = &mut self.local_net.redexes.erase;
                 local.0.drain(..(local.len() / 2))
             })
@@ -429,13 +488,32 @@ impl ThreadState {
                 .min(MAX_ITER_PER_ALLOC_TY)
                 * 4
         {
-            let mut global_net = global_net.write();
             while self.local_net.free_list.len() < MAX_ITER_PER_ALLOC_TY * 4 {
-                self.local_net.free_list.push(global_net.alloc_node());
+                self.local_net.free_list.push(nodes::alloc_node(
+                    &mut global_net.nodes.write(),
+                    &mut global_net.free_list.write(),
+                ));
             }
         }
 
-        let global_net_nodes = &global_net.read().nodes;
+        self.waiter.wait(); // exit redex move stage and enter interaction stage
+
+        // Safety: In this stage threads only read from `global_net.nodes` and none write.
+        // This is `ManuallyDrop` to avoid the guard messing with the lock on `Drop`.
+        let global_net_nodes =
+            unsafe { &ManuallyDrop::new(global_net.nodes.make_read_guard_unchecked()) };
+        // let global_net_nodes = &global_net.nodes.read();
+
+        while let Some(ptr) = self.local_net.redexes.erase.pop() {
+            interact_era(
+                &mut self.local_net.redexes,
+                &mut self.local_net.free_list,
+                &global_net_nodes,
+                ptr,
+            );
+            self.interactions_era += 1;
+        }
+
         for _ in 0..MAX_ITER_PER_ALLOC_TY {
             let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::Com as usize].pop()
             else {
@@ -474,6 +552,7 @@ impl ThreadState {
             self.interactions_ann += 1;
         }
 
+        self.waiter.wait();
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolL0 as usize].pop()
         {
             interact_follow(
@@ -485,6 +564,8 @@ impl ThreadState {
             );
             self.interactions_fol += 1;
         }
+
+        self.waiter.wait();
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolR0 as usize].pop()
         {
             interact_follow(
@@ -496,6 +577,8 @@ impl ThreadState {
             );
             self.interactions_fol += 1;
         }
+
+        self.waiter.wait();
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolL1 as usize].pop()
         {
             interact_follow(
@@ -507,6 +590,8 @@ impl ThreadState {
             );
             self.interactions_fol += 1;
         }
+
+        self.waiter.wait();
         while let Some(Redex(l, r)) = self.local_net.redexes.regular[RedexTy::FolR1 as usize].pop()
         {
             interact_follow(
@@ -519,15 +604,7 @@ impl ThreadState {
             self.interactions_fol += 1;
         }
 
-        while let Some(ptr) = self.local_net.redexes.erase.pop() {
-            interact_era(
-                &mut self.local_net.redexes,
-                &mut self.local_net.free_list,
-                &global_net_nodes,
-                ptr,
-            );
-            self.interactions_era += 1;
-        }
+        self.waiter.wait(); // make sure node readguards are all dropped.
     }
 
     pub fn interactions(&self) -> u64 {

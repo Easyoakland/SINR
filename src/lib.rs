@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::{
         macros::trace,
-        net::{Net, ThreadState},
+        net::{GlobalState, Net, ThreadState},
         node::{Node, SharedNode},
         redex::{Redex, RedexTy},
     };
@@ -297,6 +297,8 @@ mod tests {
     #[ignore = "bench"]
     fn speed_test() {
         let mut net = Net::default();
+        const THREADS: usize = 2;
+        let mut waiters = rmw_free_barrier::Waiter::new(THREADS);
 
         // Force page faults now so they don't happen while benchmarking.
         for _ in 0..10000000 {
@@ -315,99 +317,99 @@ mod tests {
         }
         eprintln!("page fault warmup finished\n");
 
+        // Insert original net for test
         for _ in 0..100000 {
             infinite_reduction_net(&mut net);
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
-        let mut thread_state = ThreadState::default();
-        let mut thread_state2: [_; 19] = core::array::from_fn(|_| ThreadState::default());
-        let net = RwLock::new(net);
+
+        // Setup threads for reduction. Use the 0 waiter for `thread_state` and run it more times to match the `rmw_free_barrier` implementation's restriction.
+        let mut thread_state = ThreadState::new(waiters.swap_remove(0));
+        let mut thread_state2: [_; THREADS - 1] =
+            core::array::from_fn(|_| ThreadState::new(waiters.pop().unwrap()));
+        assert!(waiters.pop().is_none());
+
+        let global_state = {
+            let Net {
+                nodes,
+                redexes,
+                free_list,
+            } = net;
+            GlobalState {
+                nodes: RwLock::new(nodes),
+                free_list: RwLock::new(free_list),
+                redexes: RwLock::new(redexes),
+            }
+        };
         let mut nodes_max = 0u64;
         let mut redexes_max = 0u64;
         let mut start = std::time::Instant::now();
 
         let mut end = std::time::Instant::now();
-        let a = AtomicU32::new(0);
         std::thread::scope(|s| {
             let t2 = thread_state2
-                .get_disjoint_mut(core::array::from_fn::<_, 19, _>(|i| i))
+                .get_disjoint_mut(core::array::from_fn::<_, { THREADS - 1 }, _>(|i| i))
                 .unwrap();
 
             let t2 = t2.map(|thread_state2| {
-                let net = &net;
-                let a = &a;
+                let global_state = &global_state;
                 s.spawn(move || {
-                    while a.load(core::sync::atomic::Ordering::Relaxed) == 0 {}
-                    for i in 0..(1000000u32) {
-                        // static C: core::sync::atomic::AtomicUsize =
-                        //     core::sync::atomic::AtomicUsize::new(0);
-                        // core::hint::black_box(net.read().redexes.erase.len());
-                        {
-                            // This seems to slow things down considerably.
-                            // Seems like syncronization costs of the lock is high even if everything is only reading.
-                            // TODO first thing to try: use a separate lock for each of the fields in the global net so nodes don't need a read lock to access nodes.
-                            // Doesn't bode well for costs of global sync.
-                            core::hint::black_box(&net.try_read())
-                        };
-                        // std::thread::sleep(core::time::Duration::from_micros(1));
-                        /* for x in &net.read().nodes.0[0..1]  */
-                        {
-                            // core::hint::black_box(C.load(
-                            //     // x.get().left.slot_usize(),
-                            //     core::sync::atomic::Ordering::Relaxed,
-                            // ));
-                            // core::hint::black_box(C.fetch_add(
-                            //     x.get().right.slot_usize(),
-                            //     core::sync::atomic::Ordering::Relaxed,
-                            // ));
-                        }
-                        // thread_state2.run_once(&net);
+                    for _ in 0..350000u32 {
+                        // {
+                        //     // perf: this kind of checks how lock performance affects multithreaded by repeatedly trying to read from the various global fields.
+                        //     // in the happy path in `run_once` it only accessing local state and these contention with these shouldn't be a big difference.
+                        //     core::hint::black_box(&global_state.free_list.try_read());
+                        //     core::hint::black_box(&global_state.redexes.try_read());
+                        //     core::hint::black_box(&global_state.nodes.try_read());
+                        // };
+                        thread_state2.run_once(&global_state);
                     }
+                    core::mem::take(&mut thread_state2.waiter); // remove from barrier
                 })
             });
 
             for _ in 0..5 {
-                thread_state.run_once(&net);
+                thread_state.run_once(&global_state);
             }
-            a.store(1, core::sync::atomic::Ordering::SeqCst);
             start = std::time::Instant::now();
 
             for _ in 0..400000u32 {
-                thread_state.run_once(&net);
+                thread_state.run_once(&global_state);
 
-                // let net = net.read();
-                // nodes_max = nodes_max.max(
-                //     [thread_state.local_net.nodes.len(), net.nodes.len()]
-                //         .into_iter()
-                //         .sum::<usize>()
-                //         .try_into()
-                //         .unwrap(),
-                // );
-                // redexes_max = redexes_max.max(
-                //     [
-                //         thread_state.local_net.active_redexes(),
-                //         net.active_redexes(),
-                //     ]
-                //     .into_iter()
-                //     .sum::<u64>(),
-                // );
+                nodes_max = nodes_max.max(
+                    [
+                        thread_state.local_net.nodes.len(),
+                        global_state.nodes.read().len(),
+                    ]
+                    .into_iter()
+                    .sum::<usize>()
+                    .try_into()
+                    .unwrap(),
+                );
+                redexes_max = redexes_max.max(
+                    [
+                        thread_state.local_net.active_redexes(),
+                        net::active_redexes(&global_state.redexes.read()),
+                    ]
+                    .into_iter()
+                    .sum::<u64>(),
+                );
             }
-            // eprintln!("{:?}", {
-            //     let mut x = thread_state
-            //         .local_net
-            //         .redexes
-            //         .regular
-            //         .iter()
-            //         .flat_map(|x| x.0.iter().flat_map(|x| [x.0, x.1]))
-            //         .filter(|&x| x != Ptr::EMP() && x != Ptr::ERA_0() && x != Ptr::IN())
-            //         .collect::<Vec<_>>();
-            //     x.sort();
-            //     x
-            // });
             end = std::time::Instant::now();
             t2.map(|x| x.join().unwrap());
         });
-        let net = net.into_inner();
+        let net = {
+            let GlobalState {
+                nodes,
+                free_list,
+                redexes,
+            } = global_state;
+            Net {
+                nodes: nodes.into_inner(),
+                free_list: free_list.into_inner(),
+                redexes: redexes.into_inner(),
+            }
+        };
         eprintln!("Max redexes: {}", redexes_max);
         eprintln!("Nodes max: {}", nodes_max);
         eprintln!(
