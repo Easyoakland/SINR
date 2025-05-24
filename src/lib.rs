@@ -297,7 +297,7 @@ mod tests {
     #[ignore = "bench"]
     fn speed_test() {
         let mut net = Net::default();
-        const THREADS: usize = 2;
+        const THREADS: usize = 14;
         let mut waiters = rmw_free_barrier::Waiter::new(THREADS);
 
         // Force page faults now so they don't happen while benchmarking.
@@ -343,6 +343,10 @@ mod tests {
         };
         let mut nodes_max = 0u64;
         let mut redexes_max = 0u64;
+        gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
+        let mut ids = gdt_cpus::cpu_info().unwrap().logical_processor_ids();
+        gdt_cpus::pin_thread_to_core(dbg!(ids.pop().unwrap())).unwrap();
+
         let mut start = std::time::Instant::now();
 
         let mut end = std::time::Instant::now();
@@ -353,8 +357,11 @@ mod tests {
 
             let t2 = t2.map(|thread_state2| {
                 let global_state = &global_state;
+                let id = ids.pop().unwrap();
                 s.spawn(move || {
-                    for _ in 0..350000u32 {
+                    gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
+                    gdt_cpus::pin_thread_to_core(id).unwrap();
+                    for _ in 0..(1000000u32 - 5) {
                         // {
                         //     // perf: this kind of checks how lock performance affects multithreaded by repeatedly trying to read from the various global fields.
                         //     // in the happy path in `run_once` it only accessing local state and these contention with these shouldn't be a big difference.
@@ -373,7 +380,10 @@ mod tests {
             }
             start = std::time::Instant::now();
 
-            for _ in 0..400000u32 {
+            for i in 0..1000000u32 {
+                if i % 2u32.pow(14) == 0 {
+                    dbg!(i);
+                };
                 thread_state.run_once(&global_state);
 
                 nodes_max = nodes_max.max(
@@ -432,13 +442,28 @@ mod tests {
             thread_state.interactions_era,
             thread_state.interactions_fol,
         );
+        let all_mips = [thread_state.interactions()]
+            .into_iter()
+            .chain(thread_state2.iter().map(|x| x.interactions()))
+            .map(|x| x as f32)
+            .sum::<f32>()
+            / (end.duration_since(start)).as_micros() as f32;
+        let non_follow_mips = [thread_state.non_follow_interactions()]
+            .into_iter()
+            .chain(thread_state2.iter().map(|x| x.non_follow_interactions()))
+            .map(|x| x as f32)
+            .sum::<f32>()
+            / (end.duration_since(start)).as_micros() as f32;
         eprintln!(
             "---\n\
             All MIPS: {}\n\
-            Non-follow MIPS: {}",
-            thread_state.interactions() as f32 / (end.duration_since(start)).as_micros() as f32,
-            thread_state.non_follow_interactions() as f32
-                / (end.duration_since(start)).as_micros() as f32
+            Non-follow MIPS: {}\n\
+            Average MIPS: {}\n\
+            Average Non-follow MIPS: {}",
+            all_mips,
+            non_follow_mips,
+            all_mips / (THREADS as f32),
+            non_follow_mips / (THREADS as f32)
         );
     }
 

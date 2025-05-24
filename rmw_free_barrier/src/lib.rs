@@ -84,9 +84,7 @@ impl Waiter {
                     0,
                     "First Waiter dropped before call to `wait` resulting in a deadlock"
                 );
-                // Unlike thread 0, this thread doesn't need to do anything for a while.
-                // perf: Testing indicates that using a [`std::thread::yield_now`] works much better than [`core::hint::spin_loop`] for this branch.
-                std::thread::yield_now();
+                core::hint::spin_loop();
             }
         }
     }
