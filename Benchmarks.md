@@ -386,7 +386,7 @@ All MIPS: 314.0735
 Non-follow MIPS: 134.60307
 ```
 
-Commit: XXX
+Commit: 9002bf70c540fbcb53c24dea33ba0da1caeee533
 
 Device 1 THREADS=10:
 Max redexes: 91040
