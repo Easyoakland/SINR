@@ -17,8 +17,6 @@
 //! All redexes are stored into one of several redex buffers based upon the redex's interaction type, [`RedexTy`]. The regular commute and annihilate are two interactions. So are the 4 possible follow operations depending on the type of the auxiliary target. By separating the operations into these 2+4 types it becomes possible to perform all operations of the same type with minimal branching (for SIMD) and without atomic synchronization (for CPU SIMD and general perf improvements). All threads and SIMD lanes operate to reduce the same interaction type at the same time. When one of the threads runs out of reductions of that type (or some other signal such as number of reductions) all the threads synchronize their memory and start simultaneously reducing operations of a new type.
 //! # Performance
 //! See `Benchmarks.md` for performance measurements.
-//! - On x86 single-threaded: Counting only commute and annihilate interactions appears to be ~145 million interactions per second (MIPS): 34.48 cycles per interaction.
-//! - On x86 single-threaded: Counting commute, annihilate, and linking auxiliary ports appears to be ~330 MIPS: 15.15 cycles per interaction.
 //! # Future possibilities
 //! ## Amb nodes
 //! Since this design allows for synchronizing multiple pointers to a single port without atomics, implementing amb (a 2 principal port node) should be as simple as an FollowAmb0 and FollowAmb1 interactions.
@@ -31,8 +29,8 @@
 //! - [x] Minimize branching using lookup tables
 //!     - This does not improve performance, and instead appears to decrease it. Remaining branching is very minimal.
 //! - [x] SIMD
-//!     Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
-//! - [ ] Multiple threads
+//!     - Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
+//! - [x] Multiple threads
 //! - [ ] Parse net from text
 //!
 //! [`RedexTy`]: redex::RedexTy
