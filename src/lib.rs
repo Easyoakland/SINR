@@ -31,8 +31,7 @@
 //! - [x] Minimize branching using lookup tables
 //!     - This does not improve performance, and instead appears to decrease it. Remaining branching is very minimal.
 //! - [x] SIMD
-//!     - SIMD seems useless. Profiling indicates most of the program time is spent in `ptr::write`, `ptr::read`, and checking `len==0`, inside `Vec::push` and `Vec::pop`.
-//!     Consequently, SIMD is unlikely to be useful since that part is not SIMD-able. Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
+//!     Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
 //! - [ ] Multiple threads
 //! - [ ] Parse net from text
 // # Safety
