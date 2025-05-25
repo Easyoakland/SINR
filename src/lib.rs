@@ -34,12 +34,16 @@
 //!     Attempting to implement some parts with SIMD appear to only serve to slow things down by increasing front-end load and performing unnecessary extra work to swap values inside registers. It's possible that the SIMD code was poor and could have been improved. See the `SIMD` branch for details.
 //! - [ ] Multiple threads
 //! - [ ] Parse net from text
+//!
+//! [`RedexTy`]: redex::RedexTy
+
 // # Safety
 // In various places unsafe things are done without using the `unsafe` keyword and instead conditioning on `feature="unsafe"` and detecting the unsafe and panic-ing if not `(feature="unsafe")`. This will be changed after the design is more finalized.
 
 #![feature(get_disjoint_mut_helpers)]
 #![feature(unsafe_cell_access)]
 #![allow(dead_code)] // TODO remove
+#![allow(rustdoc::private_intra_doc_links)]
 
 mod builder;
 mod left_right;
@@ -90,11 +94,12 @@ mod tests {
     use super::*;
     use crate::{
         macros::trace,
-        net::{Net, ThreadState},
+        net::{GlobalState, Net, ThreadState},
         node::{Node, SharedNode},
         redex::{Redex, RedexTy},
     };
     use core::sync::atomic::AtomicU32;
+    use parking_lot::RwLock;
 
     #[test]
     fn test_viz() {
@@ -291,12 +296,14 @@ mod tests {
     #[ignore = "bench"]
     fn speed_test() {
         let mut net = Net::default();
+        const THREADS: usize = 14;
+        let mut waiters = rmw_free_barrier::Waiter::new(THREADS);
 
         // Force page faults now so they don't happen while benchmarking.
-        for _ in 0..100000000 {
+        for _ in 0..10000000 {
             net.nodes.push(SharedNode::new(Node::default()));
         }
-        for _ in 0..100000000 {
+        for _ in 0..10000000 {
             net.nodes.pop();
         }
         for redex in &mut net.redexes.regular {
@@ -309,19 +316,117 @@ mod tests {
         }
         eprintln!("page fault warmup finished\n");
 
+        // Insert original net for test
         for _ in 0..100000 {
             infinite_reduction_net(&mut net);
         }
         trace!(file "start.dot",;viz::mem_to_dot(&net));
-        let mut thread_state = ThreadState::default();
-        let start = std::time::Instant::now();
-        for _ in 0..400000 {
-            thread_state.run_once(&mut net);
-        }
-        let end = std::time::Instant::now();
-        eprintln!("Max redexes: {}", thread_state.redexes_max);
-        eprintln!("Nodes max: {}", thread_state.nodes_max);
-        eprintln!("Final free_list length: {}", net.free_list.len(),);
+
+        // Setup threads for reduction. Use the 0 waiter for `thread_state` and run it more times to match the `rmw_free_barrier` implementation's restriction.
+        let mut thread_state = ThreadState::new(waiters.swap_remove(0));
+        let mut thread_state2: [_; THREADS - 1] =
+            core::array::from_fn(|_| ThreadState::new(waiters.pop().unwrap()));
+        assert!(waiters.pop().is_none());
+
+        let global_state = {
+            let Net {
+                nodes,
+                redexes,
+                free_list,
+            } = net;
+            GlobalState {
+                nodes: RwLock::new(nodes),
+                free_list: RwLock::new(free_list),
+                redexes: RwLock::new(redexes),
+            }
+        };
+        let mut nodes_max = 0u64;
+        let mut redexes_max = 0u64;
+        gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
+        let mut ids = gdt_cpus::cpu_info().unwrap().logical_processor_ids();
+        gdt_cpus::pin_thread_to_core(dbg!(ids.pop().unwrap())).unwrap();
+
+        let mut start = std::time::Instant::now();
+
+        let mut end = std::time::Instant::now();
+        std::thread::scope(|s| {
+            let t2 = thread_state2
+                .get_disjoint_mut(core::array::from_fn::<_, { THREADS - 1 }, _>(|i| i))
+                .unwrap();
+
+            let t2 = t2.map(|thread_state2| {
+                let global_state = &global_state;
+                let id = ids.pop().unwrap();
+                s.spawn(move || {
+                    gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
+                    gdt_cpus::pin_thread_to_core(id).unwrap();
+                    for _ in 0..(1000000u32 - 5) {
+                        // {
+                        //     // perf: this kind of checks how lock performance affects multithreaded by repeatedly trying to read from the various global fields.
+                        //     // in the happy path in `run_once` it only accessing local state and these contention with these shouldn't be a big difference.
+                        //     core::hint::black_box(&global_state.free_list.try_read());
+                        //     core::hint::black_box(&global_state.redexes.try_read());
+                        //     core::hint::black_box(&global_state.nodes.try_read());
+                        // };
+                        thread_state2.run_once(&global_state);
+                    }
+                    core::mem::take(&mut thread_state2.waiter); // remove from barrier
+                })
+            });
+
+            for _ in 0..5 {
+                thread_state.run_once(&global_state);
+            }
+            start = std::time::Instant::now();
+
+            for i in 0..1000000u32 {
+                if i % 2u32.pow(14) == 0 {
+                    dbg!(i);
+                };
+                thread_state.run_once(&global_state);
+
+                nodes_max = nodes_max.max(
+                    [
+                        thread_state.local_net.nodes.len(),
+                        global_state.nodes.read().len(),
+                    ]
+                    .into_iter()
+                    .sum::<usize>()
+                    .try_into()
+                    .unwrap(),
+                );
+                redexes_max = redexes_max.max(
+                    [
+                        thread_state.local_net.active_redexes(),
+                        net::active_redexes(&global_state.redexes.read()),
+                    ]
+                    .into_iter()
+                    .sum::<u64>(),
+                );
+            }
+            end = std::time::Instant::now();
+            t2.map(|x| x.join().unwrap());
+        });
+        let net = {
+            let GlobalState {
+                nodes,
+                free_list,
+                redexes,
+            } = global_state;
+            Net {
+                nodes: nodes.into_inner(),
+                free_list: free_list.into_inner(),
+                redexes: redexes.into_inner(),
+            }
+        };
+        eprintln!("Max redexes: {}", redexes_max);
+        eprintln!("Nodes max: {}", nodes_max);
+        eprintln!(
+            "Final free_list length: {}",
+            [thread_state.local_net.free_list.len(), net.free_list.len()]
+                .into_iter()
+                .sum::<usize>()
+        );
         eprintln!("Total time: {:?}", end - start);
         eprintln!(
             "---\n\
@@ -336,13 +441,28 @@ mod tests {
             thread_state.interactions_era,
             thread_state.interactions_fol,
         );
+        let all_mips = [thread_state.interactions()]
+            .into_iter()
+            .chain(thread_state2.iter().map(|x| x.interactions()))
+            .map(|x| x as f32)
+            .sum::<f32>()
+            / (end.duration_since(start)).as_micros() as f32;
+        let non_follow_mips = [thread_state.non_follow_interactions()]
+            .into_iter()
+            .chain(thread_state2.iter().map(|x| x.non_follow_interactions()))
+            .map(|x| x as f32)
+            .sum::<f32>()
+            / (end.duration_since(start)).as_micros() as f32;
         eprintln!(
             "---\n\
             All MIPS: {}\n\
-            Non-follow MIPS: {}",
-            thread_state.interactions() as f32 / (end.duration_since(start)).as_micros() as f32,
-            thread_state.non_follow_interactions() as f32
-                / (end.duration_since(start)).as_micros() as f32
+            Non-follow MIPS: {}\n\
+            Average MIPS: {}\n\
+            Average Non-follow MIPS: {}",
+            all_mips,
+            non_follow_mips,
+            all_mips / (THREADS as f32),
+            non_follow_mips / (THREADS as f32)
         );
     }
 

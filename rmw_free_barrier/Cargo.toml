@@ -1,0 +1,10 @@
+[package]
+name = "rmw_free_barrier"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-utils = { version = "0.8.21", default-features = false }
+
+[dev-dependencies]
+hurdles = "1.0.1"

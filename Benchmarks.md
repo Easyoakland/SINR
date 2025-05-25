@@ -385,3 +385,142 @@ follow: 204799616
 All MIPS: 314.0735
 Non-follow MIPS: 134.60307
 ```
+
+Commit: 9002bf70c540fbcb53c24dea33ba0da1caeee533
+
+Device 1 THREADS=10:
+Max redexes: 91040
+Nodes max: 207682
+Final free_list length: 512
+Total time: 13.0609293s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 686.0123
+Non-follow MIPS: 294.0053
+Average MIPS: 68.601234
+Average Non-follow MIPS: 29.400532
+
+Device 1 THREADS=8:
+Max redexes: 93088
+Nodes max: 206146
+Final free_list length: 512
+Total time: 11.6986008s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 612.72015
+Non-follow MIPS: 262.5944
+Average MIPS: 76.59002
+Average Non-follow MIPS: 32.8243
+
+Device 1 THREADS=11:
+Max redexes: 90016
+Nodes max: 208450
+Final free_list length: 512
+Total time: 14.2454032s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 691.869
+Non-follow MIPS: 296.51535
+Average MIPS: 62.897182
+Average Non-follow MIPS: 26.95594
+
+Below is two cherry-picked examples. One which is slower than usual one which is faster than usual.
+Device 2 slow sample THREADS=14:
+Max redexes: 86944
+Nodes max: 210754
+Final free_list length: 512
+Total time: 15.9709387s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 785.4227
+Non-follow MIPS: 336.6098
+Average MIPS: 56.101624
+Average Non-follow MIPS: 24.043558
+
+Device 2 fast sample THREADS=14:
+Max redexes: 86944
+Nodes max: 210754
+Final free_list length: 512
+Total time: 10.2035716s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 1229.3674
+Non-follow MIPS: 526.8719
+Average MIPS: 87.81196
+Average Non-follow MIPS: 37.633705
+
+Device 2 THREADS=1:
+Max redexes: 100256
+Nodes max: 200770
+Final free_list length: 512
+Total time: 2.9797723s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 300.69543
+Non-follow MIPS: 128.86948
+Average MIPS: 300.69543
+Average Non-follow MIPS: 128.86948
+
+Device 2 THREADS=2 (pinned to different logical core on same physical core):
+Max redexes: 99232
+Nodes max: 201538
+Final free_list length: 512
+Total time: 6.2938487s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 284.7223
+Non-follow MIPS: 122.023834
+Average MIPS: 142.36115
+Average Non-follow MIPS: 61.011917S
+
+Device 2 THREADS=2 (pinned to different physical core):
+Max redexes: 99232
+Nodes max: 201538
+Final free_list length: 512
+Total time: 5.03342s
+---
+total: 896003840
+commute: 128000640
+annihilate: 0
+erase: 256001024
+follow: 512002176
+---
+All MIPS: 356.0201
+Non-follow MIPS: 152.58005
+Average MIPS: 178.01006
+Average Non-follow MIPS: 76.29002
