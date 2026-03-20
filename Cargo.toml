@@ -6,12 +6,16 @@ edition = "2021"
 [features]
 default = ["trace"]
 trace = []
+# Enable faster unsafe paths.
 unsafe = []
+# Preallocate nodes, which is faster. Might segfault if unsafe is also enabled and runs out of preallocated memory.
 prealloc = []
+# Change OS scheduler settings to maybe get better perf. Doesn't work on mac.
+os_scheduler = ["dep:gdt-cpus"]
 
 [dependencies]
 bilge = "0.2.0"
-gdt-cpus = "25.5.0"
+gdt-cpus = { version = "25.5.0", optional = true }
 parking_lot = "0.12.3"
 petgraph = "0.7.1"
 rmw_free_barrier = { version = "0.1.0", path = "rmw_free_barrier" }

@@ -340,9 +340,12 @@ mod tests {
         };
         let mut nodes_max = 0u64;
         let mut redexes_max = 0u64;
-        gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
-        let mut ids = gdt_cpus::cpu_info().unwrap().logical_processor_ids();
-        gdt_cpus::pin_thread_to_core(dbg!(ids.pop().unwrap())).unwrap();
+        #[cfg(feature = "os_scheduler")]
+        {
+            gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
+            let mut ids = gdt_cpus::cpu_info().unwrap().logical_processor_ids();
+            gdt_cpus::pin_thread_to_core(dbg!(ids.pop().unwrap())).unwrap();
+        }
 
         let mut start = std::time::Instant::now();
 
@@ -354,10 +357,14 @@ mod tests {
 
             let t2 = t2.map(|thread_state2| {
                 let global_state = &global_state;
-                let id = ids.pop().unwrap();
                 s.spawn(move || {
-                    gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal).unwrap();
-                    gdt_cpus::pin_thread_to_core(id).unwrap();
+                    #[cfg(feature = "os_scheduler")]
+                    {
+                        let id = ids.pop().unwrap();
+                        gdt_cpus::set_thread_priority(gdt_cpus::ThreadPriority::AboveNormal)
+                            .unwrap();
+                        gdt_cpus::pin_thread_to_core(id).unwrap();
+                    }
                     for _ in 0..(1000000u32 - 5) {
                         // {
                         //     // perf: this kind of checks how lock performance affects multithreaded by repeatedly trying to read from the various global fields.
@@ -403,7 +410,10 @@ mod tests {
                 );
             }
             end = std::time::Instant::now();
-            t2.map(|x| x.join().unwrap());
+            t2.into_iter()
+                .map(|x| x.join())
+                .collect::<Result<(), _>>()
+                .unwrap();
         });
         let net = {
             let GlobalState {
